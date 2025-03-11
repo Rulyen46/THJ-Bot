@@ -14,6 +14,7 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID'))  # Convert to int immediately
 PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')  # Add this to your .env
+PORT = int(os.getenv('PORT', '80'))  # Default to port 80 for Azure
 
 # Optional Wiki variables since feature is disabled (Wiki auto-update is turned off)
 WIKI_API_URL = os.getenv('WIKI_API_URL')  # Optional
@@ -527,7 +528,7 @@ async def start_discord():
 
 async def start_api():
     """Start the FastAPI server"""
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, loop="asyncio")
+    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, loop="asyncio")
     server = uvicorn.Server(config)
     await server.serve()
 
