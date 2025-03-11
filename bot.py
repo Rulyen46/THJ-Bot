@@ -13,10 +13,12 @@ from fastapi.security import APIKeyHeader
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID'))  # Convert to int immediately
-WIKI_API_URL = os.getenv('WIKI_API_URL')  # Add this to your .env
-WIKI_API_KEY = os.getenv('WIKI_API_KEY')  # Add this to your .env
-WIKI_PAGE_ID = os.getenv('WIKI_PAGE_ID')  # Add this to your .env
 PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')  # Add this to your .env
+
+# Optional Wiki variables since feature is disabled
+WIKI_API_URL = os.getenv('WIKI_API_URL', '')  # Make optional
+WIKI_API_KEY = os.getenv('WIKI_API_KEY', '')  # Make optional
+WIKI_PAGE_ID = os.getenv('WIKI_PAGE_ID', '')  # Make optional
 
 def mask_sensitive_string(s: str) -> str:
     """Mask sensitive string by showing only first and last 4 characters"""
@@ -26,14 +28,11 @@ def mask_sensitive_string(s: str) -> str:
         return "*" * len(s)
     return f"{s[:4]}...{s[-4:]}"
 
-# Verify environment variables
+# Verify required environment variables
 print("\n=== Environment Check ===")
 required_vars = {
     'DISCORD_TOKEN': TOKEN,
     'CHANGELOG_CHANNEL_ID': CHANGELOG_CHANNEL_ID,
-    'WIKI_API_URL': WIKI_API_URL,
-    'WIKI_API_KEY': WIKI_API_KEY,
-    'WIKI_PAGE_ID': WIKI_PAGE_ID,
     'PATCHER_TOKEN': PATCHER_TOKEN
 }
 
