@@ -30,7 +30,7 @@ jobs:
       uses: docker/build-push-action@v3
       with:
         push: true
-        tags: thjchangelogregistry.azurecr.io/${{ secrets.AzureAppService_ContainerUsername_3009ed85d77c4fe9989abe5494690175 }}/thj-changelog-bot:${{ github.sha }}
+        tags: thjchangelogregistry.azurecr.io/${{ secrets.AzureAppService_ContainerUsername_3009ed85d77c4fe9989abe5494690175 }}/thj-changelog-bot :${{ github.sha }}
         file: ./Dockerfile
 
   deploy:
@@ -48,4 +48,4 @@ jobs:
         app-name: 'THJ-Patcher'
         slot-name: 'production'
         publish-profile: ${{ secrets.AzureAppService_PublishProfile_0b4ff0f63a4d4a2d98885ee8189135cc }}
-        images: 'thjchangelogregistry.azurecr.io/${{ secrets.AzureAppService_ContainerUsername_3009ed85d77c4fe9989abe5494690175 }}/thj-changelog-bot:${{ github.sha }}'
+        images: 'thjchangelogregistry.azurecr.io/${{ secrets.AzureAppService_ContainerUsername_3009ed85d77c4fe9989abe5494690175 }}/thj-changelog-bot :${{ github.sha }}'
