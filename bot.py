@@ -15,10 +15,10 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID'))  # Convert to int immediately
 PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')  # Add this to your .env
 
-# Optional Wiki variables since feature is disabled
-WIKI_API_URL = os.getenv('WIKI_API_URL', '')  # Make optional
-WIKI_API_KEY = os.getenv('WIKI_API_KEY', '')  # Make optional
-WIKI_PAGE_ID = os.getenv('WIKI_PAGE_ID', '')  # Make optional
+# Optional Wiki variables since feature is disabled (Wiki auto-update is turned off)
+WIKI_API_URL = os.getenv('WIKI_API_URL')  # Optional
+WIKI_API_KEY = os.getenv('WIKI_API_KEY')  # Optional
+WIKI_PAGE_ID = os.getenv('WIKI_PAGE_ID')  # Optional
 
 def mask_sensitive_string(s: str) -> str:
     """Mask sensitive string by showing only first and last 4 characters"""
@@ -42,6 +42,18 @@ for var_name, var_value in required_vars.items():
         raise ValueError(f"{var_name} environment variable is required")
     else:
         print(f"✓ {var_name} configured")
+
+# Log optional Wiki variables status
+print("\n=== Optional Wiki Variables ===")
+wiki_vars = {
+    'WIKI_API_URL': WIKI_API_URL,
+    'WIKI_API_KEY': WIKI_API_KEY,
+    'WIKI_PAGE_ID': WIKI_PAGE_ID
+}
+
+for var_name, var_value in wiki_vars.items():
+    status = "✓ configured" if var_value else "⚪ not set (optional)"
+    print(f"{var_name}: {status}")
 
 print("=== Environment Check Complete ===\n")
 
