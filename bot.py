@@ -517,7 +517,7 @@ async def check_and_update_wiki():
 async def start_discord():
     """Start the Discord client"""
     try:
-        print("\n🔄 Connecting to Discord...")
+        print("\n🔄 Starting Discord client...")
         await client.start(TOKEN)
     except discord.LoginFailure:
         print("\n❌ Failed to log in to Discord!")
@@ -528,7 +528,7 @@ async def start_discord():
 
 async def start_api():
     """Start the FastAPI server"""
-    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, loop="asyncio")
+    config = uvicorn.Config(app, host="0.0.0.0", port=80, loop="asyncio")
     server = uvicorn.Server(config)
     await server.serve()
 
@@ -631,11 +631,24 @@ async def get_latest_for_patcher():
 async def main():
     """Run both Discord client and FastAPI server"""
     try:
-        await asyncio.gather(
-            start_discord(),
-            start_api(),
-            # check_and_update_wiki()  # Disabled auto-posting to Wiki
-        )
+        # Start Discord client first and wait for it to be ready
+        print("\n🔄 Starting Discord client...")
+        discord_task = asyncio.create_task(start_discord())
+        
+        # Wait a bit for Discord to connect
+        await asyncio.sleep(5)
+        
+        if not client.is_ready():
+            print("⏳ Waiting for Discord client to be ready...")
+            while not client.is_ready():
+                await asyncio.sleep(1)
+        
+        print("✅ Discord client is ready!")
+        
+        # Now start the FastAPI server
+        print("🚀 Starting FastAPI server...")
+        await start_api()
+        
     except Exception as e:
         print(f"\n❌ Error in main: {type(e).__name__}")
         raise
