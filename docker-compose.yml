@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  changelog-bot:
+    build: .
+    container_name: changelog-bot
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - CHANGELOG_CHANNEL_ID=${CHANGELOG_CHANNEL_ID}
+      - WIKI_API_URL=${WIKI_API_URL}
+      - WIKI_API_KEY=${WIKI_API_KEY}
+      - WIKI_PAGE_ID=${WIKI_PAGE_ID}
+    volumes:
+      - ./logs:/app/logs
+      - .:/app
+    networks:
+      - changelog-network
+
+networks:
+  changelog-network:
+    name: changelog-network 
