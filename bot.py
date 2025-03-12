@@ -12,15 +12,29 @@ import json
 import logging
 import sys
 
-# Configure logging
+# Configure logging for Azure
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),
+        logging.StreamHandler(sys.stderr)
     ]
 )
+
+# Ensure all loggers use this configuration
+for logger_name in logging.root.manager.loggerDict:
+    logger = logging.getLogger(logger_name)
+    logger.handlers = []
+    logger.propagate = True
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Initial startup log
+logger.info("=== Bot Starting Up ===")
+logger.info("Python version: %s", sys.version)
+logger.info("Current working directory: %s", os.getcwd())
 
 # Load environment variables
 load_dotenv()
