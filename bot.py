@@ -538,12 +538,9 @@ async def start_api():
         print(f"Host: 0.0.0.0")
         print(f"Port: {PORT}")
         
-        await uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=PORT,
-            log_level="info"
-        )
+        config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
+        server = uvicorn.Server(config)
+        await server.serve()
     except Exception as e:
         print(f"❌ Failed to start FastAPI server: {str(e)}")
         print(f"Port attempted: {PORT}")
@@ -658,8 +655,11 @@ async def main():
         discord_task = asyncio.create_task(start_discord())
         
         # Wait for Discord to be ready
-        await asyncio.sleep(5)
+        timeout = 30  # 30 seconds timeout
+        start_time = asyncio.get_event_loop().time()
         while not client.is_ready():
+            if asyncio.get_event_loop().time() - start_time > timeout:
+                raise TimeoutError("Discord client failed to connect within timeout period")
             print("⏳ Waiting for Discord client to be ready...")
             await asyncio.sleep(1)
         
@@ -670,13 +670,21 @@ async def main():
             print(f"✅ Found changelog channel: {changelog_channel.name}")
         else:
             print("❌ Could not find changelog channel!")
+            raise ValueError("Changelog channel not found")
         
         # Start FastAPI server
         print("\n=== Starting FastAPI Server ===")
         api_task = asyncio.create_task(start_api())
         
+        # Wait for both tasks
         await asyncio.gather(discord_task, api_task)
         
+    except TimeoutError as e:
+        print(f"\n❌ Timeout error: {str(e)}")
+        raise
+    except ValueError as e:
+        print(f"\n❌ Configuration error: {str(e)}")
+        raise
     except Exception as e:
         print(f"\n❌ Error in main: {type(e).__name__}")
         print(f"Error details: {str(e)}")
