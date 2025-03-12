@@ -12,14 +12,15 @@ services:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - CHANGELOG_CHANNEL_ID=${CHANGELOG_CHANNEL_ID}
       - PATCHER_TOKEN=${PATCHER_TOKEN}
-      # Optional Wiki variables (feature disabled)
+      # Optional Wiki variables
       - WIKI_API_URL=${WIKI_API_URL:-}
       - WIKI_API_KEY=${WIKI_API_KEY:-}
       - WIKI_PAGE_ID=${WIKI_PAGE_ID:-}
-      # Enable logging for Azure
-      - WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
-      - DIAGNOSTICS_AZUREBLOBCONTAINERSASURL=1
-      - DIAGNOSTICS_AZUREBLOBRETENTIONINDAYS=7
+      # Azure logging configuration
+      - PYTHONUNBUFFERED=1
+      - WEBSITE_SITE_NAME=THJ-Patcher
+      - WEBSITE_HTTPLOGGING_ENABLED=1
+      - WEBSITES_PORT=80
     volumes:
       - ./logs:/app/logs
       - .:/app

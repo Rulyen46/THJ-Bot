@@ -17,19 +17,24 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.StreamHandler(sys.stderr)
+        logging.StreamHandler(sys.stdout)
     ]
 )
 
-# Ensure all loggers use this configuration
-for logger_name in logging.root.manager.loggerDict:
-    logger = logging.getLogger(logger_name)
-    logger.handlers = []
-    logger.propagate = True
+# Get the root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# Remove any existing handlers
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+
+# Add stdout handler to root logger
+stdout_handler = logging.StreamHandler(sys.stdout)
+stdout_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+root_logger.addHandler(stdout_handler)
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 # Initial startup log
 logger.info("=== Bot Starting Up ===")
