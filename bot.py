@@ -382,7 +382,6 @@ async def get_latest_for_patcher():
             
         last_message = messages[0]
         
-        
         formatted_content = format_changelog_for_wiki(
             last_message.content,
             last_message.created_at,
@@ -404,6 +403,62 @@ async def get_latest_for_patcher():
     except Exception as e:
         print(f"Error in patcher endpoint: {str(e)}")
         print(f"Full error details: {repr(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/changelog", dependencies=[Depends(verify_token)])
+async def get_changelog(count: Optional[int] = 1, all: Optional[bool] = False):
+    """
+    Get the latest changelog(s) from Discord
+    Requires X-Patcher-Token header for authentication.
+    Optional parameters:
+    - count: number of changelogs to retrieve (default: 1)
+    - all: if True, retrieves all messages ever posted (ignores count parameter)
+    Example: /changelog?count=3
+    Example: /changelog?all=true
+    """
+    logger.info('Fetching changelogs...')
+    
+    if not client.is_ready():
+        logger.error('Channel not found. Looking for ID: %s', CHANGELOG_CHANNEL_ID)
+        raise HTTPException(status_code=500, detail=f"Discord bot not ready or channel {CHANGELOG_CHANNEL_ID} not found")
+    
+    try:
+        if all:
+            logger.info('Attempting to fetch ALL messages from channel %s', changelog_channel.name)
+            messages = [message async for message in changelog_channel.history(limit=None, oldest_first=False)]
+        else:
+            logger.info('Attempting to fetch %d message(s) from channel %s', count, changelog_channel.name)
+            messages = [message async for message in changelog_channel.history(limit=count)]
+
+        if not messages:
+            logger.info('No messages found in channel')
+            return {
+                "total": 0,
+                "changelogs": []
+            }
+
+        changelogs = []
+        for message in messages:
+            formatted_content = format_changelog_for_wiki(
+                message.content, 
+                message.created_at,
+                message.author.display_name
+            )
+            changelogs.append({
+                "raw_content": message.content,
+                "formatted_content": formatted_content,
+                "author": message.author.display_name,
+                "timestamp": message.created_at.isoformat(),
+                "message_id": str(message.id)
+            })
+            
+        logger.info('Successfully fetched %d changelog(s)', len(changelogs))
+        return {
+            "total": len(changelogs),
+            "changelogs": sorted(changelogs, key=lambda x: x["timestamp"], reverse=True)
+        }
+    except Exception as e:
+        logger.error('Error fetching changelogs: %s', str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/wiki/update-changelog", dependencies=[Depends(verify_token)])
