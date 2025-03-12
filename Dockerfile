@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Set default port to 80
+ENV PORT=80
+
 # Expose port 80 for Azure Web App
 EXPOSE 80
 

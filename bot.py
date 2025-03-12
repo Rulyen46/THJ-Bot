@@ -530,10 +530,23 @@ async def start_discord():
 
 async def start_api():
     """Start the FastAPI server"""
-    print(f"\n🚀 Starting FastAPI server on port {PORT}...")
-    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, loop="asyncio")
-    server = uvicorn.Server(config)
-    await server.serve()
+    try:
+        port = int(os.getenv('PORT', '80'))
+        print(f"\n🚀 Starting FastAPI server on port {port}...")
+        
+        # Configure Uvicorn with explicit port
+        config = uvicorn.Config(
+            app=app,
+            host="0.0.0.0",
+            port=port,
+            loop="asyncio",
+            log_level="info"
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+    except Exception as e:
+        print(f"❌ Failed to start FastAPI server: {str(e)}")
+        raise
 
 @app.get("/last-message", dependencies=[Depends(verify_token)])
 async def get_last_message():
