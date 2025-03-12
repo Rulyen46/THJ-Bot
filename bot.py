@@ -139,23 +139,27 @@ async def get_changelog(count: Optional[int] = 1, all: Optional[bool] = False):
             print(f'Attempting to fetch {count} message(s) from channel {changelog_channel.name}')
             messages = [message async for message in changelog_channel.history(limit=count)]
 
+        if not messages:
+            print('No messages found in channel')
+            return {
+                "total": 0,
+                "changelogs": []
+            }
+
         changelogs = []
         for message in messages:
-            wiki_format = format_changelog_for_wiki(
+            formatted_content = format_changelog_for_wiki(
                 message.content, 
                 message.created_at,
                 message.author.display_name
             )
             changelogs.append({
-                "timestamp": message.created_at.isoformat(),
+                "raw_content": message.content,
+                "formatted_content": formatted_content,
                 "author": message.author.display_name,
-                "content": message.content,
-                "wiki_format": wiki_format
+                "timestamp": message.created_at.isoformat(),
+                "message_id": str(message.id)
             })
-        
-        if not changelogs:
-            print('No messages found in channel')
-            return {"changelogs": []}
             
         print(f'Successfully fetched {len(changelogs)} changelog(s)')
         return {
