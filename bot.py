@@ -8,12 +8,39 @@ import uvicorn
 from typing import Optional
 import aiohttp
 from fastapi.security import APIKeyHeader
+import json
 
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID')) 
 PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')
+
+# File to store the last processed message ID
+LAST_MESSAGE_FILE = "last_message.json"
+
+# Load last processed message ID from file
+def load_last_message_id():
+    try:
+        if os.path.exists(LAST_MESSAGE_FILE):
+            with open(LAST_MESSAGE_FILE, 'r') as f:
+                data = json.load(f)
+                return int(data.get('last_message_id', 0))
+    except Exception as e:
+        print(f"Error loading last message ID: {str(e)}")
+    return 0
+
+# Save last processed message ID to file
+def save_last_message_id(message_id):
+    try:
+        with open(LAST_MESSAGE_FILE, 'w') as f:
+            json.dump({'last_message_id': str(message_id)}, f)
+    except Exception as e:
+        print(f"Error saving last message ID: {str(e)}")
+
+# Initialize last_processed_message_id from file
+last_processed_message_id = load_last_message_id()
+print(f"\n📝 Last processed message ID: {last_processed_message_id}")
 
 # Ensure we use the port provided by Azure
 PORT = int(os.getenv('PORT', '80'))
@@ -70,8 +97,6 @@ client = discord.Client(intents=intents)
 # Set up FastAPI
 app = FastAPI()
 
-last_processed_message_id = None
-
 # Set up security
 api_key_header = APIKeyHeader(name="X-Patcher-Token", auto_error=True)
 
@@ -92,6 +117,28 @@ def format_changelog_for_wiki(content, timestamp, author):
     
     formatted += f"{content}\n\n---\n\n"
     return formatted
+
+async def get_date_range():
+    """Get the date range for the changelog header"""
+    try:
+        # Get the earliest and latest messages
+        messages = []
+        async for message in changelog_channel.history(limit=None, oldest_first=True):
+            messages.append(message)
+            
+        if not messages:
+            return "(No changelogs available)"
+            
+        earliest = messages[0].created_at
+        latest = messages[-1].created_at
+        
+        # Add one year to the latest date for the range
+        latest_plus_year = latest.replace(year=latest.year + 1)
+        
+        return f"({earliest.strftime('%b %d, %Y')} – {latest_plus_year.strftime('%b %d, %Y')})"
+    except Exception as e:
+        print(f"Error getting date range: {str(e)}")
+        return "(Date range unavailable)"
 
 changelog_channel = None
 
@@ -179,8 +226,11 @@ async def update_wiki_page(content, page_id):
             'Content-Type': 'application/json'
         }
         
-        if not content.startswith("# Changelog"):
-            content = "# Changelog\n\n" + content
+        # Add the header with image and date range
+        if not content.startswith("![change-logs.webp"):
+            date_range = await get_date_range()
+            header = f"![change-logs.webp](/change-logs.webp){{.align-center}}\n# THJ Change-Logs\n{date_range}\n\n"
+            content = header + content.replace("# Changelog\n\n", "")
         
         escaped_content = content.replace('\\', '\\\\').replace('"', '\\"')
         
@@ -226,13 +276,16 @@ async def update_wiki_page(content, page_id):
             async with session.post(
                 WIKI_API_URL,
                 json=update_mutation,
-                headers={'Authorization': '[MASKED]', 'Content-Type': 'application/json'}
+                headers=headers
             ) as update_response:
                 update_data = await update_response.json()
                 print(f"Response status: {update_response.status}")
                 
                 if 'errors' in update_data:
-                    print("❌ GraphQL errors occurred")
+                    print("❌ GraphQL errors occurred:")
+                    for error in update_data['errors']:
+                        print(f"Error message: {error.get('message', 'No message')}")
+                        print(f"Error details: {error}")
                     return False
                     
                 if 'data' in update_data:
@@ -244,14 +297,16 @@ async def update_wiki_page(content, page_id):
                             print(f"Updated page path: {page.get('path', 'unknown')}")
                         return True
                     else:
-                        print("❌ Update failed")
+                        print(f"❌ Update failed: {result.get('message', 'No error message provided')}")
                         return False
                         
                 print("❌ Unexpected response format")
+                print(f"Full response: {update_data}")
                 return False
                     
     except Exception as e:
         print(f"❌ Error updating Wiki page: {type(e).__name__}")
+        print(f"Error details: {str(e)}")
         return False
 
 @app.post("/test-wiki", dependencies=[Depends(verify_token)])
@@ -448,7 +503,7 @@ async def check_and_update_wiki():
                     messages_found = True
                     
                     if last_processed_message_id and message.id <= last_processed_message_id:
-                        print("No new messages to process")
+                        print(f"No new messages to process (Last ID: {last_processed_message_id})")
                         break
                         
                     print(f"New message found from: {message.author.display_name}")
@@ -475,21 +530,29 @@ async def check_and_update_wiki():
                             async with session.post(
                                 WIKI_API_URL,
                                 json={"query": query},
-                                headers={'Authorization': '[MASKED]', 'Content-Type': 'application/json'}
+                                headers=headers
                             ) as response:
                                 response_data = await response.json()
                                 if 'data' in response_data and response_data['data']['pages']['single']:
                                     current_content = response_data['data']['pages']['single']['content']
-                                    current_content = current_content.replace('# Changelog\n\n', '').strip()
+                                    # Split content to preserve header
+                                    if "![change-logs.webp" in current_content:
+                                        header_parts = current_content.split("\n\n", 3)
+                                        header = "\n\n".join(header_parts[:3])  # Preserve image, title, and date range
+                                        existing_content = header_parts[3] if len(header_parts) > 3 else ""
+                                    else:
+                                        header = ""
+                                        existing_content = current_content
                                     print("✓ Successfully retrieved current Wiki content")
                                 else:
-                                    current_content = ""
+                                    header = ""
+                                    existing_content = ""
                                     print("⚠️ No existing content found")
                     
                     except Exception as e:
                         print(f"❌ Error getting current content: {type(e).__name__}")
-                        current_content = ""
-                    
+                        header = ""
+                        existing_content = ""
                     
                     new_entry = format_changelog_for_wiki(
                         message.content,
@@ -497,17 +560,21 @@ async def check_and_update_wiki():
                         message.author.display_name
                     )
                     
-                    full_content = "# Changelog\n\n" + new_entry + current_content.strip()
+                    # If no header exists, create one
+                    if not header:
+                        date_range = await get_date_range()
+                        header = f"![change-logs.webp](/change-logs.webp){{.align-center}}\n# THJ Change-Logs\n{date_range}"
                     
-                    
+                    # Combine header, new entry, and existing content
+                    full_content = f"{header}\n\n{new_entry}{existing_content.strip()}"
                     full_content = full_content.replace('\n\n\n', '\n\n')
                     print("Content prepared for update")
-                    
                     
                     success = await update_wiki_page(full_content, page_id)
                     if success:
                         print("✅ Successfully updated Wiki with new changelog")
                         last_processed_message_id = message.id
+                        save_last_message_id(message.id)  # Save the ID after successful update
                     else:
                         print("❌ Failed to update Wiki")
                 
@@ -519,9 +586,10 @@ async def check_and_update_wiki():
                 
         except Exception as e:
             print(f"❌ Error in check_and_update_wiki: {type(e).__name__}")
+            print(f"Error details: {str(e)}")
             
-        print("\nWaiting 30 minutes before next check...")
-        await asyncio.sleep(1800)
+        print("\nWaiting 1 hour before next check...")
+        await asyncio.sleep(3600)  # 1 hour in seconds
 
 async def start_discord():
     """Start the Discord client"""
@@ -647,6 +715,56 @@ async def get_latest_for_patcher():
         print(f"Full error details: {repr(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/wiki/update-changelog", dependencies=[Depends(verify_token)])
+async def update_wiki_with_all_changelogs():
+    """
+    Fetch all changelogs and update the wiki page with them.
+    Requires X-Patcher-Token header for authentication.
+    """
+    print("\n=== Starting Wiki Changelog Update ===")
+    
+    # Check if wiki integration is configured
+    if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
+        raise HTTPException(
+            status_code=500,
+            detail="Wiki integration is not fully configured. Please set WIKI_API_URL, WIKI_API_KEY, and WIKI_PAGE_ID."
+        )
+    
+    try:
+        # Get all changelogs using existing endpoint logic
+        changelogs = await get_changelog(all=True)
+        
+        if not changelogs["total"]:
+            return {
+                "status": "success",
+                "message": "No changelogs found to update"
+            }
+        
+        # Format all changelogs for wiki
+        formatted_content = "# Changelog\n\n"
+        for changelog in changelogs["changelogs"]:
+            formatted_content += changelog["formatted_content"]
+        
+        # Update the wiki page
+        page_id = int(WIKI_PAGE_ID)
+        success = await update_wiki_page(formatted_content, page_id)
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Successfully updated wiki with {changelogs['total']} changelog entries",
+                "total_entries": changelogs["total"]
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update wiki page"
+            )
+            
+    except Exception as e:
+        print(f"❌ Error updating wiki with changelogs: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 async def main():
     """Run both Discord client and FastAPI server"""
     try:
@@ -676,12 +794,16 @@ async def main():
             print("❌ Could not find changelog channel!")
             raise ValueError("Changelog channel not found")
         
+        # Start the wiki checker task
+        wiki_task = asyncio.create_task(check_and_update_wiki())
+        print("✅ Started wiki update checker (1-hour intervals)")
+        
         # Start FastAPI server
         print("\n=== Starting FastAPI Server ===")
         api_task = asyncio.create_task(start_api())
         
-        # Wait for both tasks
-        await asyncio.gather(discord_task, api_task)
+        # Wait for all tasks
+        await asyncio.gather(discord_task, api_task, wiki_task)
         
     except TimeoutError as e:
         print(f"\n❌ Timeout error: {str(e)}")
