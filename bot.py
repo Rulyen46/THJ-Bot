@@ -14,7 +14,10 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID')) 
 PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')
-PORT = int(os.getenv('PORT', '80')) 
+
+# Ensure we use the port provided by Azure
+PORT = int(os.getenv('PORT', '80'))
+print(f"\n🔧 Configured to use port: {PORT}")
 
 # Wiki variables
 WIKI_API_URL = os.getenv('WIKI_API_URL')
@@ -531,21 +534,20 @@ async def start_discord():
 async def start_api():
     """Start the FastAPI server"""
     try:
-        port = int(os.getenv('PORT', '80'))
-        print(f"\n🚀 Starting FastAPI server on port {port}...")
+        print(f"\n🚀 Starting FastAPI server on port {PORT}...")
+        print(f"Host: 0.0.0.0")
+        print(f"Port: {PORT}")
         
-        # Configure Uvicorn with explicit port
-        config = uvicorn.Config(
-            app=app,
+        await uvicorn.run(
+            app,
             host="0.0.0.0",
-            port=port,
-            loop="asyncio",
+            port=PORT,
             log_level="info"
         )
-        server = uvicorn.Server(config)
-        await server.serve()
     except Exception as e:
         print(f"❌ Failed to start FastAPI server: {str(e)}")
+        print(f"Port attempted: {PORT}")
+        print(f"Error type: {type(e).__name__}")
         raise
 
 @app.get("/last-message", dependencies=[Depends(verify_token)])
@@ -652,29 +654,28 @@ async def main():
         print(f"CHANGELOG_CHANNEL_ID: {CHANGELOG_CHANNEL_ID}")
         print("Starting Discord client...")
         
+        # Start Discord client
+        discord_task = asyncio.create_task(start_discord())
         
-        await start_discord()
-        
-        
+        # Wait for Discord to be ready
         await asyncio.sleep(5)
-        
-        if not client.is_ready():
+        while not client.is_ready():
             print("⏳ Waiting for Discord client to be ready...")
-            while not client.is_ready():
-                await asyncio.sleep(1)
+            await asyncio.sleep(1)
         
         print("✅ Discord client is ready!")
         print("🔍 Looking for changelog channel...")
-        
         
         if changelog_channel:
             print(f"✅ Found changelog channel: {changelog_channel.name}")
         else:
             print("❌ Could not find changelog channel!")
         
-       
+        # Start FastAPI server
         print("\n=== Starting FastAPI Server ===")
-        await start_api()
+        api_task = asyncio.create_task(start_api())
+        
+        await asyncio.gather(discord_task, api_task)
         
     except Exception as e:
         print(f"\n❌ Error in main: {type(e).__name__}")
