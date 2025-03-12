@@ -544,7 +544,8 @@ async def start_discord():
 
 async def start_api():
     """Start the FastAPI server"""
-    config = uvicorn.Config(app, host="0.0.0.0", port=80, loop="asyncio")
+    print(f"\n🚀 Starting FastAPI server on port {PORT}...")
+    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, loop="asyncio")
     server = uvicorn.Server(config)
     await server.serve()
 
@@ -648,8 +649,12 @@ async def get_latest_for_patcher():
 async def main():
     """Run both Discord client and FastAPI server"""
     try:
+        print("\n=== Starting Application ===")
+        print(f"PORT: {PORT}")
+        print(f"CHANGELOG_CHANNEL_ID: {CHANGELOG_CHANNEL_ID}")
+        print("Starting Discord client...")
+        
         # Start Discord client first and wait for it to be ready
-        print("\n🔄 Starting Discord client...")
         await start_discord()
         
         # Wait a bit for Discord to connect
@@ -661,13 +666,21 @@ async def main():
                 await asyncio.sleep(1)
         
         print("✅ Discord client is ready!")
+        print("🔍 Looking for changelog channel...")
+        
+        # Verify channel is found
+        if changelog_channel:
+            print(f"✅ Found changelog channel: {changelog_channel.name}")
+        else:
+            print("❌ Could not find changelog channel!")
         
         # Now start the FastAPI server
-        print("🚀 Starting FastAPI server...")
+        print("\n=== Starting FastAPI Server ===")
         await start_api()
         
     except Exception as e:
         print(f"\n❌ Error in main: {type(e).__name__}")
+        print(f"Error details: {str(e)}")
         raise
 
 if __name__ == "__main__":
