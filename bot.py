@@ -12,14 +12,14 @@ from fastapi.security import APIKeyHeader
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID'))  # Convert to int immediately
-PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')  # Add this to your .env
-PORT = int(os.getenv('PORT', '80'))  # Default to port 80 for Azure
+CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID')) 
+PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')
+PORT = int(os.getenv('PORT', '80')) 
 
-# Optional Wiki variables since feature is disabled (Wiki auto-update is turned off)
-WIKI_API_URL = os.getenv('WIKI_API_URL')  # Optional
-WIKI_API_KEY = os.getenv('WIKI_API_KEY')  # Optional
-WIKI_PAGE_ID = os.getenv('WIKI_PAGE_ID')  # Optional
+# Wiki variables
+WIKI_API_URL = os.getenv('WIKI_API_URL')
+WIKI_API_KEY = os.getenv('WIKI_API_KEY')
+WIKI_PAGE_ID = os.getenv('WIKI_PAGE_ID') 
 
 def mask_sensitive_string(s: str) -> str:
     """Mask sensitive string by showing only first and last 4 characters"""
@@ -44,7 +44,7 @@ for var_name, var_value in required_vars.items():
     else:
         print(f"✓ {var_name} configured")
 
-# Log optional Wiki variables status
+# Log Wiki variables status
 print("\n=== Optional Wiki Variables ===")
 wiki_vars = {
     'WIKI_API_URL': WIKI_API_URL,
@@ -67,7 +67,6 @@ client = discord.Client(intents=intents)
 # Set up FastAPI
 app = FastAPI()
 
-# Add at the top with other global variables
 last_processed_message_id = None
 
 # Set up security
@@ -83,34 +82,27 @@ async def verify_token(api_key: str = Security(api_key_header)):
 
 def format_changelog_for_wiki(content, timestamp, author):
     """Format changelog content for wiki presentation with standardized header"""
-    # Format the date as just the date
     formatted = f"# {timestamp.strftime('%B %d, %Y')}\n"
     formatted += f"## {author}\n\n"
     
-    # Clean up the content
     content = content.replace('```', '').strip()
     
-    # Add the cleaned content
     formatted += f"{content}\n\n---\n\n"
     return formatted
 
-# Store the channel reference
 changelog_channel = None
 
 @client.event
 async def on_message(message):
     """Handle new messages in Discord"""
     if message.channel.id == CHANGELOG_CHANNEL_ID:
-        # Just log the message, don't update Wiki
         print(f"\n🔔 New changelog entry from: {message.author.display_name}")
-        # Wiki auto-update disabled
 
 @client.event
 async def on_ready():
     global changelog_channel
     print(f'\n🤖 Bot connected successfully!')
     
-    # Find changelog channel without verbose logging
     for guild in client.guilds:
         for channel in guild.channels:
             if channel.id == CHANGELOG_CHANNEL_ID:
@@ -180,14 +172,11 @@ async def update_wiki_page(content, page_id):
             'Content-Type': 'application/json'
         }
         
-        # Add a title at the top of the content if it's not already there
         if not content.startswith("# Changelog"):
             content = "# Changelog\n\n" + content
         
-        # Only escape quotes and backslashes for GraphQL, leave newlines as-is
         escaped_content = content.replace('\\', '\\\\').replace('"', '\\"')
         
-        # Update mutation with proper GraphQL format and all required fields
         update_mutation = {
             "query": """
             mutation ($id: Int!, $content: String!) {
@@ -224,13 +213,13 @@ async def update_wiki_page(content, page_id):
         
         print("Sending update request to Wiki.js...")
         print(f"Page ID: {page_id}")
-        print("Content length: {} characters".format(len(content)))  # Only show content length, not content
+        print("Content length: {} characters".format(len(content)))
         
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 WIKI_API_URL,
                 json=update_mutation,
-                headers={'Authorization': '[MASKED]', 'Content-Type': 'application/json'}  # Mask auth header in debug
+                headers={'Authorization': '[MASKED]', 'Content-Type': 'application/json'}
             ) as update_response:
                 update_data = await update_response.json()
                 print(f"Response status: {update_response.status}")
@@ -267,7 +256,6 @@ async def test_wiki_update():
     page_id = 114
     print(f"Testing access for page ID: {page_id}")
     
-    # Try to update the page directly
     test_content = """
 # Test Changelog
 
@@ -347,7 +335,6 @@ async def list_pages():
             'Content-Type': 'application/json'
         }
         
-        # GraphQL query to list pages
         query = """
         query ListPages {
           pages {
@@ -496,21 +483,20 @@ async def check_and_update_wiki():
                         print(f"❌ Error getting current content: {type(e).__name__}")
                         current_content = ""
                     
-                    # Format the new message
+                    
                     new_entry = format_changelog_for_wiki(
                         message.content,
                         message.created_at,
                         message.author.display_name
                     )
                     
-                    # Combine content with header, ensuring no double newlines
                     full_content = "# Changelog\n\n" + new_entry + current_content.strip()
                     
-                    # Clean up any multiple newlines or escaped characters
+                    
                     full_content = full_content.replace('\n\n\n', '\n\n')
                     print("Content prepared for update")
                     
-                    # Update the wiki
+                    
                     success = await update_wiki_page(full_content, page_id)
                     if success:
                         print("✅ Successfully updated Wiki with new changelog")
@@ -528,7 +514,7 @@ async def check_and_update_wiki():
             print(f"❌ Error in check_and_update_wiki: {type(e).__name__}")
             
         print("\nWaiting 30 minutes before next check...")
-        await asyncio.sleep(1800)  # 30 minutes = 1800 seconds
+        await asyncio.sleep(1800)
 
 async def start_discord():
     """Start the Discord client"""
@@ -610,7 +596,6 @@ async def get_latest_for_patcher():
         if not changelog_channel:
             raise HTTPException(status_code=503, detail="Changelog channel not found")
             
-        # Get the last message
         messages = [message async for message in changelog_channel.history(limit=1)]
         
         if not messages:
@@ -622,7 +607,7 @@ async def get_latest_for_patcher():
             
         last_message = messages[0]
         
-        # Format the message
+        
         formatted_content = format_changelog_for_wiki(
             last_message.content,
             last_message.created_at,
@@ -654,10 +639,10 @@ async def main():
         print(f"CHANGELOG_CHANNEL_ID: {CHANGELOG_CHANNEL_ID}")
         print("Starting Discord client...")
         
-        # Start Discord client first and wait for it to be ready
+        
         await start_discord()
         
-        # Wait a bit for Discord to connect
+        
         await asyncio.sleep(5)
         
         if not client.is_ready():
@@ -668,13 +653,13 @@ async def main():
         print("✅ Discord client is ready!")
         print("🔍 Looking for changelog channel...")
         
-        # Verify channel is found
+        
         if changelog_channel:
             print(f"✅ Found changelog channel: {changelog_channel.name}")
         else:
             print("❌ Could not find changelog channel!")
         
-        # Now start the FastAPI server
+       
         print("\n=== Starting FastAPI Server ===")
         await start_api()
         
