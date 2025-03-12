@@ -9,6 +9,18 @@ from typing import Optional
 import aiohttp
 from fastapi.security import APIKeyHeader
 import json
+import logging
+import sys
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -495,7 +507,7 @@ async def check_and_update_wiki():
     while True:
         try:
             if changelog_channel:
-                print(f"\n=== Checking for new messages at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+                logger.info(f"\n=== Checking for new messages at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
                 messages_found = False
                 
                 # Only get the most recent message
@@ -503,10 +515,10 @@ async def check_and_update_wiki():
                     messages_found = True
                     
                     if last_processed_message_id and message.id <= last_processed_message_id:
-                        print(f"No new messages to process (Last ID: {last_processed_message_id})")
+                        logger.info(f"No new messages to process (Last ID: {last_processed_message_id})")
                         break
                         
-                    print(f"New message found from: {message.author.display_name}")
+                    logger.info(f"New message found from: {message.author.display_name}")
                     
                     # Get current content first
                     page_id = int(os.getenv('WIKI_PAGE_ID'))
@@ -525,7 +537,7 @@ async def check_and_update_wiki():
                         }
                         """ % page_id
                         
-                        print(f"Fetching current Wiki content for page {page_id}...")
+                        logger.info(f"Fetching current Wiki content for page {page_id}...")
                         async with aiohttp.ClientSession() as session:
                             async with session.post(
                                 WIKI_API_URL,
@@ -543,14 +555,15 @@ async def check_and_update_wiki():
                                     else:
                                         header = ""
                                         existing_content = current_content
-                                    print("✓ Successfully retrieved current Wiki content")
+                                    logger.info("✓ Successfully retrieved current Wiki content")
                                 else:
                                     header = ""
                                     existing_content = ""
-                                    print("⚠️ No existing content found")
+                                    logger.warning("⚠️ No existing content found")
                     
                     except Exception as e:
-                        print(f"❌ Error getting current content: {type(e).__name__}")
+                        logger.error(f"❌ Error getting current content: {type(e).__name__}")
+                        logger.error(f"Error details: {str(e)}")
                         header = ""
                         existing_content = ""
                     
@@ -568,28 +581,28 @@ async def check_and_update_wiki():
                     # Combine header, new entry, and existing content
                     full_content = f"{header}\n\n{new_entry}{existing_content.strip()}"
                     full_content = full_content.replace('\n\n\n', '\n\n')
-                    print("Content prepared for update")
+                    logger.info("Content prepared for update")
                     
                     success = await update_wiki_page(full_content, page_id)
                     if success:
-                        print("✅ Successfully updated Wiki with new changelog")
+                        logger.info("✅ Successfully updated Wiki with new changelog")
                         last_processed_message_id = message.id
                         save_last_message_id(message.id)  # Save the ID after successful update
                     else:
-                        print("❌ Failed to update Wiki")
+                        logger.error("❌ Failed to update Wiki")
                 
                 if not messages_found:
-                    print("No new messages found in channel")
+                    logger.info("No new messages found in channel")
                         
             else:
-                print("⏳ Waiting for changelog channel to be ready...")
+                logger.warning("⏳ Waiting for changelog channel to be ready...")
                 
         except Exception as e:
-            print(f"❌ Error in check_and_update_wiki: {type(e).__name__}")
-            print(f"Error details: {str(e)}")
+            logger.error(f"❌ Error in check_and_update_wiki: {type(e).__name__}")
+            logger.error(f"Error details: {str(e)}")
             
-        print("\nWaiting 1 hour before next check...")
-        await asyncio.sleep(3600)  # 1 hour in seconds
+        logger.info("\nWaiting 30 seconds before next check...")
+        await asyncio.sleep(30)  # Check every 30 seconds
 
 async def start_discord():
     """Start the Discord client"""
@@ -796,7 +809,7 @@ async def main():
         
         # Start the wiki checker task
         wiki_task = asyncio.create_task(check_and_update_wiki())
-        print("✅ Started wiki update checker (1-hour intervals)")
+        print("✅ Started wiki update checker (30-second intervals)")
         
         # Start FastAPI server
         print("\n=== Starting FastAPI Server ===")
