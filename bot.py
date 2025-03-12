@@ -121,22 +121,31 @@ async def on_ready():
     if not changelog_channel:
         print(f'❌ Could not find changelog channel')
 
-@app.get("/changelog")
-async def get_changelog(count: Optional[int] = 1):
+@app.get("/changelog", dependencies=[Depends(verify_token)])
+async def get_changelog(count: Optional[int] = 1, all: Optional[bool] = False):
     """
     Get the latest changelog(s) from Discord
-    Optional query parameter 'count' to specify number of changelogs to retrieve
+    Requires X-Patcher-Token header for authentication.
+    Optional parameters:
+    - count: number of changelogs to retrieve (default: 1)
+    - all: if True, retrieves all messages ever posted (ignores count parameter)
     Example: /changelog?count=3
+    Example: /changelog?all=true
     """
     if not changelog_channel:
         print(f'Channel not found. Looking for ID: {CHANGELOG_CHANNEL_ID}')
         raise HTTPException(status_code=500, detail=f"Discord bot not ready or channel {CHANGELOG_CHANNEL_ID} not found")
     
     try:
-        print(f'Attempting to fetch {count} message(s) from channel {changelog_channel.name}')
+        if all:
+            print(f'Attempting to fetch ALL messages from channel {changelog_channel.name}')
+            messages = [message async for message in changelog_channel.history(limit=None, oldest_first=False)]
+        else:
+            print(f'Attempting to fetch {count} message(s) from channel {changelog_channel.name}')
+            messages = [message async for message in changelog_channel.history(limit=count)]
+
         changelogs = []
-        async for message in changelog_channel.history(limit=count):
-            print(f'Found message: {message.content[:50]}...')
+        for message in messages:
             wiki_format = format_changelog_for_wiki(
                 message.content, 
                 message.created_at,
@@ -154,7 +163,10 @@ async def get_changelog(count: Optional[int] = 1):
             return {"changelogs": []}
             
         print(f'Successfully fetched {len(changelogs)} changelog(s)')
-        return {"changelogs": changelogs}
+        return {
+            "total": len(changelogs),
+            "changelogs": sorted(changelogs, key=lambda x: x["timestamp"], reverse=True)
+        }
     except Exception as e:
         print(f'Error fetching changelogs: {str(e)}')
         raise HTTPException(status_code=500, detail=str(e))
@@ -246,10 +258,11 @@ async def update_wiki_page(content, page_id):
         print(f"❌ Error updating Wiki page: {type(e).__name__}")
         return False
 
-@app.post("/test-wiki")
+@app.post("/test-wiki", dependencies=[Depends(verify_token)])
 async def test_wiki_update():
     """
     Test endpoint to verify Wiki.js API connection
+    Requires X-Patcher-Token header for authentication.
     """
     page_id = 114
     print(f"Testing access for page ID: {page_id}")
@@ -314,10 +327,11 @@ async def get_page_id(path):
         print(f"Error looking up page: {str(e)}")
         return None
 
-@app.get("/lookup-page/{path:path}")
+@app.get("/lookup-page/{path:path}", dependencies=[Depends(verify_token)])
 async def lookup_page(path: str):
     """
     Look up a Wiki.js page ID by path
+    Requires X-Patcher-Token header for authentication.
     """
     page_id = await get_page_id(path)
     if page_id:
@@ -363,10 +377,11 @@ async def list_pages():
         print(f"Error listing pages: {str(e)}")
         return None
 
-@app.get("/list-pages")
+@app.get("/list-pages", dependencies=[Depends(verify_token)])
 async def get_pages():
     """
     List all Wiki.js pages to help find the correct path
+    Requires X-Patcher-Token header for authentication.
     """
     pages = await list_pages()
     if pages:
@@ -374,10 +389,11 @@ async def get_pages():
     else:
         raise HTTPException(status_code=500, detail="Failed to list pages")
 
-@app.get("/test-wiki-read")
+@app.get("/test-wiki-read", dependencies=[Depends(verify_token)])
 async def test_wiki_read():
     """
     Test endpoint to verify Wiki.js API read access
+    Requires X-Patcher-Token header for authentication.
     """
     page_id = 114  # Using known page ID
     print(f"Testing read access for page ID: {page_id}")
@@ -532,10 +548,11 @@ async def start_api():
     server = uvicorn.Server(config)
     await server.serve()
 
-@app.get("/last-message")
+@app.get("/last-message", dependencies=[Depends(verify_token)])
 async def get_last_message():
     """
     Get the last message from the changelog channel
+    Requires X-Patcher-Token header for authentication.
     """
     try:
         print("\n=== Attempting to read last message ===")
@@ -633,7 +650,7 @@ async def main():
     try:
         # Start Discord client first and wait for it to be ready
         print("\n🔄 Starting Discord client...")
-        discord_task = asyncio.create_task(start_discord())
+        await start_discord()
         
         # Wait a bit for Discord to connect
         await asyncio.sleep(5)
