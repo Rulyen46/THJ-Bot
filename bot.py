@@ -125,6 +125,30 @@ intents.message_content = True
 intents.guilds = True
 client = discord.Client(intents=intents)
 
+# Global variable for changelog channel
+changelog_channel = None
+
+@client.event
+async def on_ready():
+    """Handle Discord client ready event"""
+    global changelog_channel
+    logger.info('🤖 Bot connected successfully!')
+    
+    for guild in client.guilds:
+        for channel in guild.channels:
+            if channel.id == CHANGELOG_CHANNEL_ID:
+                changelog_channel = channel
+                logger.info('✅ Found changelog channel: %s', channel.name)
+                return
+    
+    logger.error('❌ Could not find changelog channel!')
+
+@client.event
+async def on_message(message):
+    """Handle new messages in Discord"""
+    if message.channel.id == CHANGELOG_CHANNEL_ID:
+        logger.info('🔔 New changelog entry from: %s', message.author.display_name)
+
 # Set up FastAPI
 app = FastAPI()
 
@@ -249,8 +273,8 @@ async def check_and_update_wiki():
             logger.error(f"❌ Error in check_and_update_wiki: {type(e).__name__}")
             logger.error(f"Error details: {str(e)}")
             
-        logger.info("\nWaiting 30 seconds before next check...")
-        await asyncio.sleep(30)  # Check every 30 seconds
+        logger.info("\nWaiting 1 hour before next check...")
+        await asyncio.sleep(3600)  # Check every hour
 
 async def start_discord():
     """Start the Discord client"""
@@ -267,17 +291,23 @@ async def start_discord():
 async def start_api():
     """Start the FastAPI server"""
     try:
-        print(f"\n🚀 Starting FastAPI server on port {PORT}...")
-        print(f"Host: 0.0.0.0")
-        print(f"Port: {PORT}")
+        logger.info(f"\n🚀 Starting FastAPI server on port {PORT}...")
+        logger.info(f"Host: 0.0.0.0")
+        logger.info(f"Port: {PORT}")
         
-        config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
+        config = uvicorn.Config(
+            app=app,
+            host="0.0.0.0",
+            port=PORT,
+            log_level="info",
+            access_log=True
+        )
         server = uvicorn.Server(config)
         await server.serve()
     except Exception as e:
-        print(f"❌ Failed to start FastAPI server: {str(e)}")
-        print(f"Port attempted: {PORT}")
-        print(f"Error type: {type(e).__name__}")
+        logger.error(f"❌ Failed to start FastAPI server: {str(e)}")
+        logger.error(f"Port attempted: {PORT}")
+        logger.error(f"Error type: {type(e).__name__}")
         raise
 
 @app.get("/last-message", dependencies=[Depends(verify_token)])
@@ -457,7 +487,7 @@ async def main():
         
         # Start the wiki checker task
         wiki_task = asyncio.create_task(check_and_update_wiki())
-        print("✅ Started wiki update checker (30-second intervals)")
+        print("✅ Started wiki update checker (1-hour intervals)")
         
         # Start FastAPI server
         print("\n=== Starting FastAPI Server ===")
