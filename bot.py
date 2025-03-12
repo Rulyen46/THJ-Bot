@@ -511,6 +511,59 @@ async def update_wiki_with_all_changelogs():
         print(f"❌ Error updating wiki with changelogs: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+async def update_wiki_page(content: str, page_id: int) -> bool:
+    """
+    Update the specified wiki page with new content.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        logger.info(f"Updating wiki page {page_id}...")
+        headers = {
+            'Authorization': f'Bearer {WIKI_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        mutation = """
+        mutation ($id: Int!, $content: String!) {
+          pages {
+            update(id: $id, content: $content) {
+              responseResult {
+                succeeded
+                errorCode
+                slug
+                message
+              }
+            }
+          }
+        }
+        """
+        
+        variables = {
+            "id": page_id,
+            "content": content
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                WIKI_API_URL,
+                json={"query": mutation, "variables": variables},
+                headers=headers
+            ) as response:
+                response_data = await response.json()
+                
+                if 'data' in response_data and response_data['data']['pages']['update']['responseResult']['succeeded']:
+                    logger.info("✅ Wiki page updated successfully")
+                    return True
+                else:
+                    error_msg = response_data.get('errors', [{}])[0].get('message', 'Unknown error')
+                    logger.error(f"❌ Failed to update wiki: {error_msg}")
+                    return False
+                    
+    except Exception as e:
+        logger.error(f"❌ Error updating wiki: {type(e).__name__}")
+        logger.error(f"Error details: {str(e)}")
+        return False
+
 async def main():
     """Run both Discord client and FastAPI server"""
     try:
