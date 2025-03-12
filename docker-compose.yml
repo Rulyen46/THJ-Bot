@@ -18,6 +18,10 @@ services:
       - WIKI_API_URL=${WIKI_API_URL:-}
       - WIKI_API_KEY=${WIKI_API_KEY:-}
       - WIKI_PAGE_ID=${WIKI_PAGE_ID:-}
+      # Enable logging for Azure
+      - WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
+      - DIAGNOSTICS_AZUREBLOBCONTAINERSASURL=1
+      - DIAGNOSTICS_AZUREBLOBRETENTIONINDAYS=7
     volumes:
       - ./logs:/app/logs
       - .:/app
