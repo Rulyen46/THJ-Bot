@@ -513,7 +513,7 @@ async def update_wiki_with_all_changelogs():
 
 async def update_wiki_page(content: str, page_id: int) -> bool:
     """
-    Update the specified wiki page with new content.
+    Update the specified wiki page with new content and publish it.
     Returns True if successful, False otherwise.
     """
     try:
@@ -523,7 +523,8 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
             'Content-Type': 'application/json'
         }
         
-        mutation = """
+        # First update the content
+        update_mutation = """
         mutation ($id: Int!, $content: String!) {
           pages {
             update(id: $id, content: $content) {
@@ -544,24 +545,78 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
         }
         
         async with aiohttp.ClientSession() as session:
+            # Step 1: Update the content
             async with session.post(
                 WIKI_API_URL,
-                json={"query": mutation, "variables": variables},
+                json={"query": update_mutation, "variables": variables},
                 headers=headers
             ) as response:
                 response_data = await response.json()
+                logger.info(f"Wiki API Update Response Status: {response.status}")
+                logger.info(f"Update Response: {json.dumps(response_data, indent=2)}")
                 
-                if 'data' in response_data and response_data['data']['pages']['update']['responseResult']['succeeded']:
-                    logger.info("✅ Wiki page updated successfully")
+                if not ('data' in response_data and response_data['data']['pages']['update']['responseResult']['succeeded']):
+                    if 'errors' in response_data:
+                        error_msg = response_data['errors'][0].get('message', 'Unknown error')
+                        error_details = json.dumps(response_data['errors'], indent=2)
+                        logger.error(f"❌ Failed to update wiki: {error_msg}")
+                        logger.error(f"Error details: {error_details}")
+                    elif 'data' in response_data:
+                        result = response_data['data']['pages']['update']['responseResult']
+                        logger.error(f"❌ Update failed: {result.get('message', 'No message')} (Error code: {result.get('errorCode', 'None')})")
+                    else:
+                        logger.error(f"❌ Unexpected response format: {json.dumps(response_data, indent=2)}")
+                    return False
+            
+            # Step 2: Publish the changes
+            publish_mutation = """
+            mutation ($id: Int!) {
+              pages {
+                publish(id: $id) {
+                  responseResult {
+                    succeeded
+                    errorCode
+                    slug
+                    message
+                  }
+                }
+              }
+            }
+            """
+            
+            publish_variables = {"id": page_id}
+            
+            async with session.post(
+                WIKI_API_URL,
+                json={"query": publish_mutation, "variables": publish_variables},
+                headers=headers
+            ) as response:
+                response_data = await response.json()
+                logger.info(f"Wiki API Publish Response Status: {response.status}")
+                logger.info(f"Publish Response: {json.dumps(response_data, indent=2)}")
+                
+                if 'data' in response_data and response_data['data']['pages']['publish']['responseResult']['succeeded']:
+                    logger.info("✅ Wiki page updated and published successfully")
                     return True
                 else:
-                    error_msg = response_data.get('errors', [{}])[0].get('message', 'Unknown error')
-                    logger.error(f"❌ Failed to update wiki: {error_msg}")
+                    if 'errors' in response_data:
+                        error_msg = response_data['errors'][0].get('message', 'Unknown error')
+                        error_details = json.dumps(response_data['errors'], indent=2)
+                        logger.error(f"❌ Failed to publish wiki: {error_msg}")
+                        logger.error(f"Error details: {error_details}")
+                    elif 'data' in response_data:
+                        result = response_data['data']['pages']['publish']['responseResult']
+                        logger.error(f"❌ Publish failed: {result.get('message', 'No message')} (Error code: {result.get('errorCode', 'None')})")
+                    else:
+                        logger.error(f"❌ Unexpected response format: {json.dumps(response_data, indent=2)}")
                     return False
                     
     except Exception as e:
-        logger.error(f"❌ Error updating wiki: {type(e).__name__}")
+        logger.error(f"❌ Error updating/publishing wiki: {type(e).__name__}")
         logger.error(f"Error details: {str(e)}")
+        if hasattr(e, 'response'):
+            logger.error(f"Response status: {e.response.status}")
+            logger.error(f"Response text: {await e.response.text()}")
         return False
 
 async def main():
