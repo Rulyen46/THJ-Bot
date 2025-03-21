@@ -2,16 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the rest of the application
 COPY . .
 
-# Set default port to 80
-ENV PORT=80
-
-# Expose port 80 for Azure Web App
+# Expose the port the app runs on
 EXPOSE 80
 
-# Start the bot directly without exposing environment
-CMD ["python", "-u", "bot.py"] 
+# Command to run the application
+CMD ["python", "bot.py"] 

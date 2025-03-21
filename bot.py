@@ -45,6 +45,7 @@ logger.info("Current working directory: %s", os.getcwd())
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID')) 
+EXP_BOOST_CHANNEL_ID = int(os.getenv('EXP_BOOST_CHANNEL_ID'))
 PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')
 
 # Wiki variables
@@ -59,6 +60,9 @@ WIKI_HEADER = """![change-logs.webp](/change-logs.webp){.align-center}
 # THJ Change-Logs
 (Newest is up top, Oldest is at the bottom.)"""
 
+# Add this constant near the top with other constants
+VALUE_CHANNEL_ID = 1319011465960882197
+
 def mask_sensitive_string(s: str) -> str:
     """Mask sensitive string by showing only first and last 4 characters"""
     if not s:
@@ -72,6 +76,7 @@ print("\n=== Environment Check ===")
 required_vars = {
     'DISCORD_TOKEN': TOKEN,
     'CHANGELOG_CHANNEL_ID': CHANGELOG_CHANNEL_ID,
+    'EXP_BOOST_CHANNEL_ID': EXP_BOOST_CHANNEL_ID,
     'PATCHER_TOKEN': PATCHER_TOKEN
 }
 
@@ -102,13 +107,14 @@ intents.message_content = True
 intents.guilds = True
 client = discord.Client(intents=intents)
 
-# Global variable for changelog channel
+# Global variables for channels
 changelog_channel = None
+exp_boost_channel = None
 
 @client.event
 async def on_ready():
     """Handle Discord client ready event"""
-    global changelog_channel
+    global changelog_channel, exp_boost_channel
     logger.info('🤖 Bot connected successfully!')
     
     for guild in client.guilds:
@@ -116,9 +122,14 @@ async def on_ready():
             if channel.id == CHANGELOG_CHANNEL_ID:
                 changelog_channel = channel
                 logger.info('✅ Found changelog channel: %s', channel.name)
-                return
+            elif channel.id == EXP_BOOST_CHANNEL_ID:
+                exp_boost_channel = channel
+                logger.info('✅ Found exp boost channel: %s', channel.name)
     
-    logger.error('❌ Could not find changelog channel!')
+    if not changelog_channel:
+        logger.error('❌ Could not find changelog channel!')
+    if not exp_boost_channel:
+        logger.error('❌ Could not find exp boost channel!')
 
 @client.event
 async def on_message(message):
@@ -756,6 +767,140 @@ async def process_latest_changelog():
     except Exception as e:
         logger.error(f"❌ Error processing latest changelog: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/value", dependencies=[Depends(verify_token)])
+async def get_value():
+    """
+    Get the value from the specified Discord channel
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== Reading Value from Discord Channel ===")
+        
+        if not client.is_ready():
+            raise HTTPException(status_code=503, detail="Discord client is not ready")
+            
+        if not exp_boost_channel:
+            raise HTTPException(status_code=503, detail="Exp boost channel not found")
+            
+        # Get the last message from the channel
+        messages = [message async for message in exp_boost_channel.history(limit=1)]
+        
+        if not messages:
+            return {
+                "status": "success",
+                "found": False,
+                "message": "No messages found in exp boost channel"
+            }
+            
+        last_message = messages[0]
+        
+        return {
+            "status": "success",
+            "found": True,
+            "value": last_message.content,
+            "timestamp": last_message.created_at.isoformat(),
+            "message_id": str(last_message.id)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error reading value: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/expbonus", dependencies=[Depends(verify_token)])
+async def get_exp_boost():
+    """
+    Get the current exp boost value from the channel title
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== Reading Exp Boost Value from Channel Title ===")
+        logger.info(f"Looking for channel ID: {EXP_BOOST_CHANNEL_ID}")
+        
+        if not client.is_ready():
+            logger.error("Discord client is not ready")
+            raise HTTPException(status_code=503, detail="Discord client is not ready")
+            
+        if not exp_boost_channel:
+            logger.error("Exp boost channel not found")
+            raise HTTPException(status_code=503, detail="Exp boost channel not found")
+            
+        logger.info(f"Found channel: {exp_boost_channel.name}")
+        
+        return {
+            "status": "success",
+            "found": True,
+            "exp_boost": exp_boost_channel.name,
+            "channel_id": str(exp_boost_channel.id)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error reading exp boost value: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/serverstatus", dependencies=[Depends(verify_token)])
+async def get_server_status():
+    """
+    Get the current server status from Project EQ API
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== Fetching Server Status ===")
+        
+        # Use the same proxy URL as the JS code
+        proxy_url = "https://api.codetabs.com/v1/proxy?quest=http://login.projecteq.net/servers/list"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(proxy_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch server status. Status: {response.status}")
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Failed to fetch server status"
+                    )
+                
+                data = await response.json()
+                logger.info("Successfully fetched server data")
+                
+                # Find the Heroes' Journey server
+                server = next(
+                    (s for s in data if "Heroes' Journey [Multiclass" in s.get('server_long_name', '')),
+                    None
+                )
+                
+                if not server:
+                    logger.warning("Heroes' Journey server not found in response")
+                    return {
+                        "status": "success",
+                        "found": False,
+                        "message": "Server not found in response"
+                    }
+                
+                logger.info(f"Found server: {server.get('server_long_name')}")
+                logger.info(f"Players online: {server.get('players_online')}")
+                
+                return {
+                    "status": "success",
+                    "found": True,
+                    "server": {
+                        "name": server.get('server_long_name'),
+                        "players_online": server.get('players_online'),
+                        "last_updated": datetime.now().isoformat()
+                    }
+                }
+                
+    except aiohttp.ClientError as e:
+        logger.error(f"Network error fetching server status: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to connect to server status API"
+        )
+    except Exception as e:
+        logger.error(f"Error fetching server status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 async def main():
     """Run both Discord client and FastAPI server"""
