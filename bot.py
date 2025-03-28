@@ -45,8 +45,14 @@ logger.info("Current working directory: %s", os.getcwd())
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID')) 
-EXP_BOOST_CHANNEL_ID = int(os.getenv('EXP_BOOST_CHANNEL_ID'))
+EXP_BOOST_CHANNEL_ID = os.getenv('EXP_BOOST_CHANNEL_ID')
 PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')
+
+# Convert EXP_BOOST_CHANNEL_ID to int if it exists
+if EXP_BOOST_CHANNEL_ID:
+    EXP_BOOST_CHANNEL_ID = int(EXP_BOOST_CHANNEL_ID)
+else:
+    logger.warning("EXP_BOOST_CHANNEL_ID not set - exp boost functionality will be disabled")
 
 # Wiki variables
 WIKI_API_URL = os.getenv('WIKI_API_URL')
@@ -76,7 +82,6 @@ print("\n=== Environment Check ===")
 required_vars = {
     'DISCORD_TOKEN': TOKEN,
     'CHANGELOG_CHANNEL_ID': CHANGELOG_CHANNEL_ID,
-    'EXP_BOOST_CHANNEL_ID': EXP_BOOST_CHANNEL_ID,
     'PATCHER_TOKEN': PATCHER_TOKEN
 }
 
@@ -92,7 +97,8 @@ print("\n=== Optional Wiki Variables ===")
 wiki_vars = {
     'WIKI_API_URL': WIKI_API_URL,
     'WIKI_API_KEY': WIKI_API_KEY,
-    'WIKI_PAGE_ID': WIKI_PAGE_ID
+    'WIKI_PAGE_ID': WIKI_PAGE_ID,
+    'EXP_BOOST_CHANNEL_ID': EXP_BOOST_CHANNEL_ID
 }
 
 for var_name, var_value in wiki_vars.items():
@@ -130,12 +136,6 @@ async def on_ready():
         logger.error('❌ Could not find changelog channel!')
     if not exp_boost_channel:
         logger.error('❌ Could not find exp boost channel!')
-
-@client.event
-async def on_message(message):
-    """Handle new messages in Discord"""
-    if message.channel.id == CHANGELOG_CHANNEL_ID:
-        logger.info('🔔 New changelog entry from: %s', message.author.display_name)
 
 # Set up FastAPI
 app = FastAPI()
@@ -437,60 +437,106 @@ async def get_latest_for_patcher():
         print(f"Full error details: {repr(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/changelog/{message_id}", dependencies=[Depends(verify_token)])
 @app.get("/changelog", dependencies=[Depends(verify_token)])
-async def get_changelog(count: Optional[int] = 1, all: Optional[bool] = False):
+async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = False):
     """
-    Get the latest changelog(s) from Discord
+    Get changelogs from the Discord channel.
+    Can be called as either:
+    - /changelog?message_id=1234567890
+    - /changelog/1234567890
+    - /changelog?all=true (to get all changelogs)
+    If message_id is provided, returns all changelogs after that message.
+    If no message_id is provided and all=false, returns the latest changelog.
+    If all=true, returns all available changelogs.
     Requires X-Patcher-Token header for authentication.
-    Optional parameters:
-    - count: number of changelogs to retrieve (default: 1)
-    - all: if True, retrieves all messages ever posted (ignores count parameter)
-    Example: /changelog?count=3
-    Example: /changelog?all=true
     """
-    logger.info('Fetching changelogs...')
-    
-    if not client.is_ready():
-        logger.error('Channel not found. Looking for ID: %s', CHANGELOG_CHANNEL_ID)
-        raise HTTPException(status_code=500, detail=f"Discord bot not ready or channel {CHANGELOG_CHANNEL_ID} not found")
-    
     try:
-        if all:
-            logger.info('Attempting to fetch ALL messages from channel %s', changelog_channel.name)
-            messages = [message async for message in changelog_channel.history(limit=None, oldest_first=False)]
-        else:
-            logger.info('Attempting to fetch %d message(s) from channel %s', count, changelog_channel.name)
-            messages = [message async for message in changelog_channel.history(limit=count)]
-
-        if not messages:
-            logger.info('No messages found in channel')
-            return {
-                "total": 0,
-                "changelogs": []
-            }
-
-        changelogs = []
-        for message in messages:
-            formatted_content = format_changelog_for_wiki(
-                message.content, 
-                message.created_at,
-                message.author.display_name
-            )
-            changelogs.append({
-                "raw_content": message.content,
-                "formatted_content": formatted_content,
-                "author": message.author.display_name,
-                "timestamp": message.created_at.isoformat(),
-                "message_id": str(message.id)
-            })
+        logger.info("\n=== Fetching Changelogs ===")
+        
+        if not client.is_ready():
+            logger.error("Discord client is not ready")
+            raise HTTPException(status_code=503, detail="Discord client is not ready")
             
-        logger.info('Successfully fetched %d changelog(s)', len(changelogs))
+        if not changelog_channel:
+            logger.error("Changelog channel not found")
+            raise HTTPException(status_code=503, detail="Changelog channel not found")
+            
+        logger.info(f"Found channel: {changelog_channel.name}")
+        
+        # Fetch messages
+        messages = []
+        
+        if message_id:
+            try:
+                # Convert string ID to int to validate it's a proper snowflake
+                reference_id = int(message_id)
+                logger.info(f"Fetching messages after ID: {reference_id}")
+                
+                # Get messages from newest to oldest
+                async for message in changelog_channel.history(limit=100, after=discord.Object(id=reference_id)):
+                    logger.info(f"Checking message {message.id}:")
+                    logger.info(f"- Content: {message.content[:200]}")
+                    
+                    # Check if message contains changelog markers
+                    is_changelog = (
+                        message.content.startswith('```') or 
+                        '```' in message.content
+                    )
+                    
+                    logger.info(f"- Is changelog: {is_changelog}")
+                    
+                    if is_changelog:
+                        messages.append({
+                            "id": str(message.id),
+                            "content": message.content,
+                            "author": str(message.author),
+                            "timestamp": message.created_at.isoformat()
+                        })
+                        logger.info(f"Found newer changelog: {message.id}")
+                    else:
+                        logger.info(f"Skipping message {message.id} - not a changelog")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid message ID format")
+        else:
+            # If all=true, get all changelogs
+            if all:
+                logger.info("Fetching all changelogs")
+                async for message in changelog_channel.history(limit=None):  # No limit for all changelogs
+                    if message.content.startswith('```') or '```' in message.content:
+                        messages.append({
+                            "id": str(message.id),
+                            "content": message.content,
+                            "author": str(message.author),
+                            "timestamp": message.created_at.isoformat()
+                        })
+                        logger.info(f"Found changelog: {message.id}")
+            else:
+                # Just get the latest changelog
+                async for message in changelog_channel.history(limit=10):  # Check more messages to find a changelog
+                    if message.content.startswith('```') or '```' in message.content:
+                        messages.append({
+                            "id": str(message.id),
+                            "content": message.content,
+                            "author": str(message.author),
+                            "timestamp": message.created_at.isoformat()
+                        })
+                        break
+        
+        # Sort messages by ID (chronological order)
+        messages.sort(key=lambda x: int(x["id"]))
+        
+        logger.info(f"Found {len(messages)} changelog messages")
+        logger.info(f"Message IDs found: {[m['id'] for m in messages]}")
+        
         return {
-            "total": len(changelogs),
-            "changelogs": sorted(changelogs, key=lambda x: x["timestamp"], reverse=True)
+            "status": "success",
+            "changelogs": messages,
+            "total": len(messages)
         }
+        
     except Exception as e:
-        logger.error('Error fetching changelogs: %s', str(e))
+        logger.error(f"Error fetching changelogs: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/wiki/update-changelog", dependencies=[Depends(verify_token)])
@@ -815,6 +861,14 @@ async def get_exp_boost():
     """
     try:
         logger.info("\n=== Reading Exp Boost Value from Channel Title ===")
+        
+        if not EXP_BOOST_CHANNEL_ID:
+            logger.warning("EXP_BOOST_CHANNEL_ID not configured")
+            return {
+                "status": "error",
+                "message": "Exp boost functionality is not configured"
+            }
+            
         logger.info(f"Looking for channel ID: {EXP_BOOST_CHANNEL_ID}")
         
         if not client.is_ready():
@@ -931,16 +985,12 @@ async def main():
             print("❌ Could not find changelog channel!")
             raise ValueError("Changelog channel not found")
         
-        # Start the wiki checker task
-        wiki_task = asyncio.create_task(check_and_update_wiki())
-        print("✅ Started wiki update checker (1-hour intervals)")
-        
-        # Start FastAPI server
         print("\n=== Starting FastAPI Server ===")
-        api_task = asyncio.create_task(start_api())
+        print("✅ Ready to handle API requests")
         
-        # Wait for all tasks
-        await asyncio.gather(discord_task, api_task, wiki_task)
+        # Start FastAPI server and wait
+        api_task = asyncio.create_task(start_api())
+        await asyncio.gather(discord_task, api_task)
         
     except TimeoutError as e:
         print(f"\n❌ Timeout error: {str(e)}")
