@@ -689,28 +689,37 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
         with open(CHANGELOG_PATH, "r") as md_file:
             content = md_file.read()
         
-        # Parse the content into changelog entries
-        # Use a more precise regex pattern to split entries
-        entries_pattern = r"## Entry (\d+)\s+\*\*Author:\*\* (.*?)\s+\*\*Date:\*\* (.*?)\s+\n([\s\S]*?)(?=\n---\n|\Z)"
-        entry_matches = re.finditer(entries_pattern, content)
-        
+        # Parse the content into changelog entries with complete raw content
         messages = []
-        entry_ids = []
+        
+        # Use regex pattern to find entries
+        entry_pattern = r"## Entry (\d+)[\s\S]*?(?=\n## Entry|$)"
+        entry_matches = re.finditer(entry_pattern, content)
+        
         for match in entry_matches:
+            full_entry = match.group(0).strip()
             entry_id = match.group(1)
-            author = match.group(2)
-            timestamp = match.group(3)
-            entry_content = match.group(4).strip()
+            
+            # Extract author and date
+            author_match = re.search(r"\*\*Author:\*\* (.*?)\n", full_entry)
+            date_match = re.search(r"\*\*Date:\*\* (.*?)\n", full_entry)
+            
+            author = author_match.group(1) if author_match else "Unknown"
+            timestamp = date_match.group(1) if date_match else "Unknown"
+            
+            # Get content part (everything after the header metadata)
+            content_part = re.sub(r"^## Entry \d+\s+\*\*Author:\*\* .*?\s+\*\*Date:\*\* .*?\s+\n", "", full_entry, flags=re.DOTALL)
             
             messages.append({
                 "id": entry_id,
-                "content": entry_content,
+                "content": content_part.strip(),
                 "author": author,
-                "timestamp": timestamp
+                "timestamp": timestamp,
+                "raw": full_entry
             })
-            entry_ids.append(entry_id)
         
         # Log a summary instead of each individual entry
+        entry_ids = [m["id"] for m in messages]
         if entry_ids:
             logger.info(f"Found {len(entry_ids)} changelog entries (IDs from {entry_ids[0]} to {entry_ids[-1]})")
         else:
