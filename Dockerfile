@@ -12,5 +12,8 @@ COPY . .
 # Expose the port the app runs on
 EXPOSE 80
 
-# Command to run the application
-CMD ["python", "main.py"]
+# Set up environment for Azure - ensure PORT is properly used
+ENV PORT=80
+
+# Command to run the application - use shell form for better compatibility with Azure
+CMD python /app/main.py
