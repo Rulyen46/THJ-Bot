@@ -542,6 +542,15 @@ async def get_server_status():
                         "message": "Server not found in response"
                     }
                 
+                logger.info(f"Found server: {server.get('server_long_name')}")
+                logger.info(f"Players online: {server.get('players_online')}")
+                
+                return {
+                    "status": "success",
+                    "found": True,
+                    "server": {
+                        "name": server.get('server_long_name'),
+                        "players_online": server.get('players_online'),
                         "last_updated": datetime.now().isoformat()
                     }
                 }
@@ -558,24 +567,6 @@ async def get_server_status():
             status_code=500,
             detail=str(e)
         )
-
-def format_changelog_for_wiki(content, timestamp, author):
-    """Format changelog content for wiki presentation"""
-    # Clean and validate the content
-    if not content or not isinstance(content, str):
-        logger.error(f"Invalid content type: {type(content)}")
-        return ""
-        
-    # Remove Discord markdown code blocks and trim
-    content = content.replace('```', '').strip()
-    
-    # Format the entry with consistent spacing
-    formatted = f"# {timestamp.strftime('%B %d, %Y')}\n"
-    formatted += f"## {author}\n\n"
-    formatted += f"{content}\n\n"
-    formatted += "---"  # No extra newlines after horizontal rule
-    
-    return formatted
 
 @app.get("/last-message", dependencies=[Depends(verify_token)])
 async def get_last_message():
