@@ -445,6 +445,70 @@ async def get_exp_boost():
         logger.error(f"Error fetching EXP boost status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/serverstatus", dependencies=[Depends(verify_token)])
+async def get_server_status():
+    """
+    Get the current server status from Project EQ API
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== Fetching Server Status ===")
+        
+        # Use the same proxy URL as the JS code
+        proxy_url = "https://api.codetabs.com/v1/proxy?quest=http://login.projecteq.net/servers/list"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(proxy_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch server status. Status: {response.status}")
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Failed to fetch server status"
+                    )
+                
+                data = await response.json()
+                logger.info("Successfully fetched server data")
+                
+                # Find the Heroes' Journey server
+                server = next(
+                    (s for s in data if "Heroes' Journey [Multiclass" in s.get('server_long_name', '')),
+                    None
+                )
+                
+                if not server:
+                    logger.warning("Heroes' Journey server not found in response")
+                    return {
+                        "status": "success",
+                        "found": False,
+                        "message": "Server not found in response"
+                    }
+                
+                logger.info(f"Found server: {server.get('server_long_name')}")
+                logger.info(f"Players online: {server.get('players_online')}")
+                
+                return {
+                    "status": "success",
+                    "found": True,
+                    "server": {
+                        "name": server.get('server_long_name'),
+                        "players_online": server.get('players_online'),
+                        "last_updated": datetime.now().isoformat()
+                    }
+                }
+                
+    except aiohttp.ClientError as e:
+        logger.error(f"Network error fetching server status: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to connect to server status API"
+        )
+    except Exception as e:
+        logger.error(f"Error fetching server status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
 def format_changelog_for_wiki(content, timestamp, author):
     """Format changelog content for wiki presentation"""
     # Clean and validate the content
@@ -838,22 +902,37 @@ async def start_discord():
 async def start_api():
     """Start the FastAPI server"""
     try:
-        logger.info(f"\n🚀 Starting FastAPI server on port {PORT}...")
+        # Log configuration clearly for debugging
+        logger.info("\n=== FastAPI Server Configuration ===")
         logger.info(f"Host: 0.0.0.0")
-        logger.info(f"Port: {PORT}")
+        logger.info(f"PORT env variable: {os.getenv('PORT')}")
+        port_to_use = int(os.getenv('PORT', '80'))
+        logger.info(f"Using port: {port_to_use}")
         
+        # Add a health check endpoint
+        @app.get("/health")
+        async def health_check():
+            """Health check endpoint for Azure"""
+            return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+        
+        # Configure Uvicorn with proper settings for Azure
         config = uvicorn.Config(
             app=app,
-            host="0.0.0.0",
-            port=PORT,
+            host="0.0.0.0",  # Bind to all interfaces
+            port=port_to_use,
             log_level="info",
-            access_log=True
+            access_log=True,
+            timeout_keep_alive=65,  # Increased timeout for Azure health checks
         )
+        
+        logger.info("Starting Discord client in background...")
+        asyncio.create_task(start_discord())
+        
+        logger.info(f"🚀 Starting FastAPI server...")
         server = uvicorn.Server(config)
         await server.serve()
     except Exception as e:
         logger.error(f"❌ Failed to start FastAPI server: {str(e)}")
-        logger.error(f"Port attempted: {PORT}")
         logger.error(f"Error type: {type(e).__name__}")
         raise
 
