@@ -14,6 +14,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Log important diagnostics at startup
+logger.info("=== Application Diagnostics ===")
+logger.info(f"Python version: {sys.version}")
+logger.info(f"Current working directory: {os.getcwd()}")
+logger.info(f"Directory contents: {os.listdir('.')}")
+logger.info(f"PORT environment variable: {os.getenv('PORT', '80')}")
+
 async def run_discord_bot():
     """Import and run the Discord bot"""
     logger.info("Starting Discord bot...")
@@ -30,6 +37,7 @@ async def run_discord_bot():
             from dotenv import load_dotenv
             load_dotenv()
             TOKEN = os.getenv('DISCORD_TOKEN')
+            logger.info(f"Discord token found: {'Yes' if TOKEN else 'No'}")
             await discord_module.client.start(TOKEN)
         else:
             logger.error("Discord.py does not expose a 'client' object")
@@ -50,6 +58,7 @@ async def run_api_server():
         # If Patcher_API.py has the start functions as we expect
         if hasattr(api_module, 'start_api'):
             # Patcher_API already has its own Discord client - we'll use that one
+            logger.info(f"Starting API with PORT={os.getenv('PORT', '80')}")
             await api_module.start_api()
         else:
             logger.error("Patcher_API.py does not have expected 'start_api' function")
