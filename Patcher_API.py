@@ -1,11 +1,11 @@
 import os
 import discord
-from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi import FastAPI, HTTPException, Security, Depends, Request, Response
 from dotenv import load_dotenv
 from datetime import datetime
 import asyncio
 import uvicorn
-from typing import Optional
+from typing import Optional, Callable
 import aiohttp
 from fastapi.security import APIKeyHeader
 import json
@@ -16,6 +16,9 @@ from fastapi.background import BackgroundTasks
 from fastapi.responses import FileResponse
 import markdown
 import re
+import time
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
 
 # Configure logging for Azure
 logging.basicConfig(
@@ -148,8 +151,55 @@ async def on_ready():
     if not exp_boost_channel:
         logger.error('❌ Could not find exp boost channel!')
 
+class APILoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware to log all API requests with detailed information"""
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Get client IP - works with X-Forwarded-For header for proxied requests
+        client_ip = request.client.host
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()
+        
+        # Get auth status (authenticated or anonymous)
+        auth_status = "anonymous"
+        if "X-Patcher-Token" in request.headers:
+            # Mask the token in logs for security
+            token_value = request.headers["X-Patcher-Token"]
+            masked_token = mask_sensitive_string(token_value)
+            auth_status = "authenticated" if token_value == PATCHER_TOKEN else f"invalid_token({masked_token})"
+        
+        # Log the request start
+        request_id = f"{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+        logger.info(f"API Request #{request_id} | {request.method} {request.url.path} | From: {client_ip} | Auth: {auth_status}")
+        
+        # Process the request and measure time
+        start_time = time.time()
+        try:
+            response = await call_next(request)
+            process_time = time.time() - start_time
+            
+            # Log successful response
+            logger.info(
+                f"API Response #{request_id} | {request.method} {request.url.path} | "
+                f"Status: {response.status_code} | Time: {process_time:.3f}s | Size: {response.headers.get('content-length', 'unknown')}"
+            )
+            
+            return response
+        except Exception as e:
+            # Log exceptions
+            process_time = time.time() - start_time
+            logger.error(
+                f"API Error #{request_id} | {request.method} {request.url.path} | "
+                f"Error: {str(e)} | Time: {process_time:.3f}s"
+            )
+            raise
+
 # Set up FastAPI
 app = FastAPI()
+
+# Add API logging middleware
+app.add_middleware(APILoggingMiddleware)
 
 # Set up security
 api_key_header = APIKeyHeader(name="X-Patcher-Token", auto_error=True)
