@@ -220,94 +220,6 @@ async def process_wiki_content(current_content: str, new_entry: str) -> str:
     
     return full_content
 
-async def check_and_update_wiki():
-    """Periodically check Discord channel for new messages and update Wiki"""
-    while True:
-        try:
-            if changelog_channel:
-                logger.info(f"\n=== Checking for new messages at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
-                
-                # Get the most recent message
-                async for message in changelog_channel.history(limit=1):
-                    logger.info(f"Processing latest message from: {message.author.display_name}")
-                    
-                    # Get current content first
-                    page_id = int(os.getenv('WIKI_PAGE_ID'))
-                    try:
-                        headers = {
-                            'Authorization': f'Bearer {WIKI_API_KEY}',
-                            'Content-Type': 'application/json'
-                        }
-                        query = """
-                        query {
-                          pages {
-                            single(id: %d) {
-                              content
-                            }
-                          }
-                        }
-                        """ % page_id
-                        
-                        logger.info(f"Fetching current Wiki content for page {page_id}...")
-                        async with aiohttp.ClientSession() as session:
-                            async with session.post(
-                                WIKI_API_URL,
-                                json={"query": query},
-                                headers=headers
-                            ) as response:
-                                response_data = await response.json()
-                                if 'data' in response_data and response_data['data']['pages']['single']:
-                                    current_content = response_data['data']['pages']['single']['content']
-                                    logger.info("✓ Successfully retrieved current Wiki content")
-                                    
-                                    # Format the new entry
-                                    new_entry = format_changelog_for_wiki(
-                                        message.content,
-                                        message.created_at,
-                                        message.author.display_name
-                                    )
-                                    
-                                    # Check if this entry is already in the Wiki
-                                    # Create a unique identifier from the date, author, and first 50 chars of content
-                                    entry_date = message.created_at.strftime('%B %d, %Y')
-                                    entry_identifier = f"# {entry_date}\n## {message.author.display_name}\n\n{message.content[:50]}"
-                                    
-                                    if entry_identifier in current_content:
-                                        logger.info("⏭️ Latest changelog entry is already in the Wiki, skipping update")
-                                        break
-                                    
-                                    # If we get here, this is a new entry that needs to be added
-                                    logger.info("🆕 New changelog entry detected, updating Wiki")
-                                    
-                                    # Process and combine content
-                                    full_content = await process_wiki_content(current_content, new_entry)
-                                    logger.info("Content prepared for update")
-                                    
-                                    success = await update_wiki_page(full_content, page_id)
-                                    if success:
-                                        logger.info("✅ Successfully updated Wiki with latest changelog")
-                                    else:
-                                        logger.error("❌ Failed to update Wiki")
-                                else:
-                                    current_content = ""
-                                    logger.warning("⚠️ No existing content found")
-                    
-                    except Exception as e:
-                        logger.error(f"❌ Error getting current content: {type(e).__name__}")
-                        logger.error(f"Error details: {str(e)}")
-                        current_content = ""
-                    break
-                        
-            else:
-                logger.warning("⏳ Waiting for changelog channel to be ready...")
-                
-        except Exception as e:
-            logger.error(f"❌ Error in check_and_update_wiki: {type(e).__name__}")
-            logger.error(f"Error details: {str(e)}")
-            
-        logger.info("\nWaiting 1 hour before next check...")
-        await asyncio.sleep(3600)  # Check every hour
-
 async def start_discord():
     """Start the Discord client"""
     try:
@@ -1004,4 +916,4 @@ async def main():
         raise
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
