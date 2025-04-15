@@ -13,4 +13,4 @@ COPY . .
 EXPOSE 80
 
 # Command to run the application
-CMD ["python", "bot.py"] 
+CMD ["python", "main.py"]
