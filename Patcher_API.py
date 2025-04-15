@@ -495,6 +495,15 @@ async def get_exp_boost():
         logger.error(f"Error fetching EXP boost status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/expbonus", dependencies=[Depends(verify_token)])
+async def get_exp_bonus():
+    """
+    Alias for /exp-boost endpoint to maintain compatibility with clients using /expbonus
+    Requires X-Patcher-Token header for authentication.
+    """
+    logger.info("Redirecting /expbonus request to /exp-boost endpoint")
+    return await get_exp_boost()
+
 @app.get("/serverstatus", dependencies=[Depends(verify_token)])
 async def get_server_status():
     """
@@ -533,15 +542,6 @@ async def get_server_status():
                         "message": "Server not found in response"
                     }
                 
-                logger.info(f"Found server: {server.get('server_long_name')}")
-                logger.info(f"Players online: {server.get('players_online')}")
-                
-                return {
-                    "status": "success",
-                    "found": True,
-                    "server": {
-                        "name": server.get('server_long_name'),
-                        "players_online": server.get('players_online'),
                         "last_updated": datetime.now().isoformat()
                     }
                 }
