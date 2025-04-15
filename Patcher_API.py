@@ -704,6 +704,7 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
         entry_matches = re.finditer(entries_pattern, content)
         
         messages = []
+        entry_ids = []
         for match in entry_matches:
             entry_id = match.group(1)
             author = match.group(2)
@@ -716,7 +717,13 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
                 "author": author,
                 "timestamp": timestamp
             })
-            logger.info(f"Found changelog entry: {entry_id}")
+            entry_ids.append(entry_id)
+        
+        # Log a summary instead of each individual entry
+        if entry_ids:
+            logger.info(f"Found {len(entry_ids)} changelog entries (IDs from {entry_ids[0]} to {entry_ids[-1]})")
+        else:
+            logger.info("No changelog entries found")
         
         # Sort messages by ID (chronological order)
         messages.sort(key=lambda x: int(x["id"]))
@@ -725,8 +732,9 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
         if message_id:
             try:
                 reference_id = int(message_id)
-                messages = [m for m in messages if int(m["id"]) > reference_id]
-                logger.info(f"Filtered to {len(messages)} entries after ID: {reference_id}")
+                filtered_messages = [m for m in messages if int(m["id"]) > reference_id]
+                logger.info(f"Filtered to {len(filtered_messages)} entries after ID: {reference_id}")
+                messages = filtered_messages
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid message ID format")
         elif not all:
@@ -734,10 +742,6 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
             if messages:
                 messages = [messages[-1]]
                 logger.info(f"Returning only the latest changelog: {messages[0]['id']}")
-            
-        logger.info(f"Found {len(messages)} changelog entries")
-        if messages:
-            logger.info(f"Message IDs found: {[m['id'] for m in messages]}")
         
         return {
             "status": "success",
