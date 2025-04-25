@@ -5,6 +5,7 @@ import logging
 import json
 from datetime import datetime
 import asyncio
+import re
 
 # Load environment variables
 load_dotenv()
@@ -32,9 +33,40 @@ intents.message_content = True
 intents.guilds = True  # Needed for channel updates
 client = discord.Client(intents=intents)
 
+async def sync_changelog_on_startup():
+    """Fetch all messages from the changelog channel and update changelog.md with any new ones."""
+    try:
+        channel = client.get_channel(CHANGELOG_CHANNEL_ID)
+        if not channel:
+            logger.error(f"Changelog channel with ID {CHANGELOG_CHANNEL_ID} not found.")
+            return
+        logger.info("Syncing changelog on startup...")
+        # Read existing changelog IDs
+        existing_ids = set()
+        if os.path.exists(CHANGELOG_PATH):
+            with open(CHANGELOG_PATH, "r") as md_file:
+                content = md_file.read()
+                existing_ids = set([m for m in re.findall(r"## Entry (\d+)", content)])
+        # Fetch all messages from the channel
+        new_entries = []
+        async for message in channel.history(limit=None, oldest_first=True):
+            if str(message.id) not in existing_ids and message.content.strip():
+                logger.info(f"Adding missed changelog entry: {message.id}")
+                new_entries.append(message)
+        # Add new entries to changelog.md
+        if new_entries:
+            logger.info(f"Adding {len(new_entries)} missed changelog entries to changelog.md")
+            for msg in new_entries:
+                await update_changelog_file(msg)
+        else:
+            logger.info("No missed changelog entries found.")
+    except Exception as e:
+        logger.error(f"Error syncing changelog on startup: {str(e)}")
+
 @client.event
 async def on_ready():
     logger.info('Bot is ready and connected to Discord!')
+    await sync_changelog_on_startup()
     
     # Check for and update EXP boost status on startup
     for guild in client.guilds:
