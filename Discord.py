@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 import asyncio
 import re
+import traceback
+import aiohttp
 
 # Load environment variables
 load_dotenv()
@@ -20,18 +22,28 @@ else:
     logging.warning("EXP_BOOST_CHANNEL_ID not set - exp boost functionality will be disabled")
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("/app/logs/discord_bot.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Define the paths to the files
 CHANGELOG_PATH = "/app/changelog.md"  # Using the same path as in Patcher_API.py
 SERVER_STATUS_PATH = "/app/ServerStatus.md"  # New path for server status
 
-# Set up Discord client
+# Set up Discord client with reconnect enabled
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True  # Needed for channel updates
-client = discord.Client(intents=intents)
+client = discord.Client(intents=intents, reconnect=True)
+
+# Define a health check interval (5 minutes)
+HEALTH_CHECK_INTERVAL = 300
 
 async def sync_changelog_on_startup():
     """Fetch all messages from the changelog channel and update changelog.md with any new ones."""
@@ -62,10 +74,47 @@ async def sync_changelog_on_startup():
             logger.info("No missed changelog entries found.")
     except Exception as e:
         logger.error(f"Error syncing changelog on startup: {str(e)}")
+        logger.error(traceback.format_exc())
+
+async def health_check():
+    """Periodically check connection health and log status"""
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            logger.info("Health check - Bot is still connected, latency: {:.2f}ms".format(client.latency * 1000))
+            
+            # Ping Discord's API to keep connection active
+            async with aiohttp.ClientSession() as session:
+                async with session.get('https://discord.com/api/v10/gateway') as resp:
+                    if resp.status == 200:
+                        logger.info("Discord API gateway connection is healthy")
+                    else:
+                        logger.warning(f"Discord API gateway returned status code: {resp.status}")
+            
+            # Update bot status to show it's active
+            await client.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.watching, 
+                    name=f"for updates | {datetime.now().strftime('%H:%M:%S')}"
+                )
+            )
+            
+            # Check channel access
+            if client.get_channel(CHANGELOG_CHANNEL_ID) is None:
+                logger.warning(f"Cannot access changelog channel {CHANGELOG_CHANNEL_ID}")
+            
+            if EXP_BOOST_CHANNEL_ID and client.get_channel(EXP_BOOST_CHANNEL_ID) is None:
+                logger.warning(f"Cannot access exp boost channel {EXP_BOOST_CHANNEL_ID}")
+                
+        except Exception as e:
+            logger.error(f"Error during health check: {str(e)}")
+            logger.error(traceback.format_exc())
+        
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
 @client.event
 async def on_ready():
-    logger.info('Bot is ready and connected to Discord!')
+    logger.info(f'Bot is ready and connected to Discord! Connected as {client.user.name} (ID: {client.user.id})')
     await sync_changelog_on_startup()
     
     # Check for and update EXP boost status on startup
@@ -75,6 +124,38 @@ async def on_ready():
                 logger.info(f"Found EXP boost channel: {channel.name}")
                 await update_server_status_from_channel(channel)
                 break
+    
+    # Start health check task
+    client.loop.create_task(health_check())
+    
+    # Set initial status
+    await client.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching, 
+            name="for changelog updates"
+        )
+    )
+
+@client.event
+async def on_resumed():
+    """Called when the client has resumed a session."""
+    logger.info("Session resumed after disconnection.")
+    
+    # Re-sync changelog on resume to catch any missed messages
+    await sync_changelog_on_startup()
+    
+    # Reset status
+    await client.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching, 
+            name="for changelog updates"
+        )
+    )
+
+@client.event
+async def on_disconnect():
+    """Called when the client has disconnected from Discord."""
+    logger.warning("Bot disconnected from Discord. Will attempt to reconnect.")
 
 @client.event
 async def on_guild_channel_update(before, after):
@@ -94,6 +175,7 @@ async def on_message(message):
             logger.info("Successfully updated changelog.md file")
         except Exception as e:
             logger.error(f"Error updating changelog.md: {str(e)}")
+            logger.error(traceback.format_exc())
 
 async def update_server_status_from_channel(channel):
     """Update the ServerStatus.md file with the channel title information"""
@@ -139,6 +221,7 @@ async def update_server_status_from_channel(channel):
                     content += "\n\n## EXP Boost Status\n\n" + new_entry
             except Exception as e:
                 logger.error(f"Error reading ServerStatus.md: {str(e)}")
+                logger.error(traceback.format_exc())
                 # Create new file if reading fails
                 content = "# Server Status\n\n## EXP Boost Status\n\n" + new_entry
         
@@ -154,6 +237,7 @@ async def update_server_status_from_channel(channel):
         
     except Exception as e:
         logger.error(f"Error in update_server_status_from_channel: {str(e)}")
+        logger.error(traceback.format_exc())
         raise
 
 async def update_changelog_file(message):
@@ -184,6 +268,7 @@ async def update_changelog_file(message):
                     content = "# Changelog\n\n" + new_entry + content
             except Exception as e:
                 logger.error(f"Error reading changelog.md: {str(e)}")
+                logger.error(traceback.format_exc())
                 # Create new file if reading fails
                 content = "# Changelog\n\n" + new_entry
         
@@ -197,6 +282,7 @@ async def update_changelog_file(message):
         
     except Exception as e:
         logger.error(f"Error in update_changelog_file: {str(e)}")
+        logger.error(traceback.format_exc())
         raise
 
 def format_changelog_entry(message):
@@ -223,6 +309,7 @@ def save_last_message_info(message):
             json.dump(data, f, indent=2)
     except Exception as e:
         logger.error(f"Error saving last_message.json: {str(e)}")
+        logger.error(traceback.format_exc())
 
 def save_exp_boost_status_info(channel):
     """Save information about the EXP boost channel status"""
@@ -237,6 +324,20 @@ def save_exp_boost_status_info(channel):
             json.dump(data, f, indent=2)
     except Exception as e:
         logger.error(f"Error saving last_exp_boost.json: {str(e)}")
+        logger.error(traceback.format_exc())
 
+# Run the client with proper reconnection handling
 if __name__ == "__main__":
-    client.run(TOKEN)
+    # Try to handle keyboard interrupts gracefully
+    try:
+        logger.info("Starting Discord bot...")
+        client.run(TOKEN, reconnect=True)
+    except discord.errors.LoginFailure:
+        logger.critical("Invalid Discord token. Please check your .env file.")
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user.")
+    except Exception as e:
+        logger.critical(f"Fatal error: {str(e)}")
+        logger.critical(traceback.format_exc())
+        # Wait a bit before exiting to allow logs to be written
+        asyncio.run(asyncio.sleep(1))
