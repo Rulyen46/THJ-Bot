@@ -8,6 +8,7 @@ import asyncio
 import re
 import traceback
 import aiohttp
+import importlib.util
 
 # Load environment variables
 load_dotenv()
@@ -173,6 +174,28 @@ async def on_message(message):
         try:
             await update_changelog_file(message)
             logger.info("Successfully updated changelog.md file")
+            
+            # Post to Reddit
+            try:
+                reddit_poster = import_reddit_poster()
+                if reddit_poster:
+                    # Create entry object for the new message
+                    entry = {
+                        "id": str(message.id),
+                        "author": message.author.display_name,
+                        "timestamp": message.created_at.isoformat(),
+                        "content": message.content
+                    }
+                    
+                    # Post to Reddit as a new post
+                    success, result_message = reddit_poster.post_changelog_to_reddit(entry)
+                    if success:
+                        logger.info(f"Successfully posted to Reddit: {result_message}")
+                    else:
+                        logger.error(f"Failed to post to Reddit: {result_message}")
+            except Exception as e:
+                logger.error(f"Error posting to Reddit: {str(e)}")
+                logger.error(traceback.format_exc())
         except Exception as e:
             logger.error(f"Error updating changelog.md: {str(e)}")
             logger.error(traceback.format_exc())
@@ -325,6 +348,18 @@ def save_exp_boost_status_info(channel):
     except Exception as e:
         logger.error(f"Error saving last_exp_boost.json: {str(e)}")
         logger.error(traceback.format_exc())
+
+def import_reddit_poster():
+    """Import the Reddit poster module."""
+    try:
+        spec = importlib.util.spec_from_file_location("reddit_poster", "/app/reddit_poster.py")
+        reddit_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reddit_module)
+        return reddit_module
+    except Exception as e:
+        logger.error(f"Error importing Reddit poster: {str(e)}")
+        logger.error(traceback.format_exc())
+        return None
 
 # Run the client with proper reconnection handling
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ import re
 import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
+import importlib.util
 
 # Configure logging for Azure
 logging.basicConfig(
@@ -989,6 +990,247 @@ async def start_api():
         logger.error(f"❌ Failed to start FastAPI server: {str(e)}")
         logger.error(f"Error type: {type(e).__name__}")
         raise
+
+def import_reddit_poster():
+    """Import the Reddit poster module."""
+    try:
+        spec = importlib.util.spec_from_file_location("reddit_poster", "/app/reddit_poster.py")
+        reddit_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reddit_module)
+        return reddit_module
+    except Exception as e:
+        logger.error(f"Error importing Reddit poster: {str(e)}")
+        return None
+
+@app.post("/reddit/post-changelog", dependencies=[Depends(verify_token)])
+async def post_to_reddit(create_new: bool = False, title: Optional[str] = None):
+    """
+    Post changelogs to Reddit.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== Posting to Reddit ===")
+        
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(status_code=500, detail="Failed to import Reddit poster module")
+        
+        # Get changelogs using existing endpoint logic
+        changelogs = await get_changelog(all=True)
+        
+        if not changelogs["total"]:
+            return {"status": "error", "message": "No changelogs found to post"}
+        
+        # Post to Reddit
+        success, message = reddit_poster.post_changelog_to_reddit(
+            changelogs["changelogs"], 
+            create_new, 
+            title
+        )
+        
+        if success:
+            return {"status": "success", "message": message}
+        else:
+            raise HTTPException(status_code=500, detail=message)
+    except Exception as e:
+        logger.error(f"Error posting to Reddit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/reddit/post-entry/{entry_id}", dependencies=[Depends(verify_token)])
+async def post_entry_to_reddit(entry_id: str):
+    """
+    Post a specific changelog entry to Reddit.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info(f"\n=== Posting Entry {entry_id} to Reddit ===")
+        
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(status_code=500, detail="Failed to import Reddit poster module")
+        
+        # Get the specific changelog entry
+        changelogs = await get_changelog(all=True)
+        
+        # Find the entry with matching ID
+        entry = next((e for e in changelogs["changelogs"] if e["id"] == entry_id), None)
+        
+        if not entry:
+            raise HTTPException(status_code=404, detail=f"Changelog entry {entry_id} not found")
+        
+        # Post to Reddit
+        success, message = reddit_poster.post_changelog_to_reddit(entry)
+        
+        if success:
+            return {"status": "success", "message": message}
+        else:
+            raise HTTPException(status_code=500, detail=message)
+    except Exception as e:
+        logger.error(f"Error posting to Reddit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/reddit/post-all-entries", dependencies=[Depends(verify_token)])
+async def post_all_entries_to_reddit():
+    """
+    Post all unpublished changelog entries to Reddit.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== Posting All Unpublished Entries to Reddit ===")
+        
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(status_code=500, detail="Failed to import Reddit poster module")
+        
+        # Get all changelogs
+        changelogs = await get_changelog(all=True)
+        
+        if not changelogs["total"]:
+            return {"status": "success", "message": "No changelogs found to post"}
+        
+        # Get already posted entries
+        posted_entries = reddit_poster.get_posted_entries()
+        posted_ids = [post["entry_id"] for post in posted_entries.get("posts", [])]
+        
+        # Filter out already posted entries
+        to_post = [entry for entry in changelogs["changelogs"] if entry["id"] not in posted_ids]
+        
+        if not to_post:
+            return {"status": "success", "message": "All entries have already been posted"}
+        
+        # Post each entry
+        results = []
+        for entry in to_post:
+            success, message = reddit_poster.post_changelog_to_reddit(entry)
+            results.append({
+                "entry_id": entry["id"],
+                "success": success,
+                "message": message
+            })
+            
+            # Add a small delay to avoid hitting Reddit rate limits
+            await asyncio.sleep(2)
+        
+        return {
+            "status": "success", 
+            "message": f"Posted {len([r for r in results if r['success']])} of {len(to_post)} entries",
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Error posting to Reddit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/reddit/test", dependencies=[Depends(verify_token)])
+async def test_reddit_posting(background_tasks: BackgroundTasks, 
+                              test_mode: bool = True,
+                              use_real_data: bool = False,
+                              entry_id: Optional[str] = None):
+    """
+    Test endpoint for Reddit posting functionality.
+    
+    Parameters:
+    - test_mode: If True, runs in simulation mode without actually posting to Reddit
+    - use_real_data: If True, uses real changelog data; otherwise uses test data
+    - entry_id: If provided, tests with a specific changelog entry
+    
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== TESTING REDDIT INTEGRATION ===")
+        logger.info(f"Test Mode: {test_mode}")
+        logger.info(f"Using Real Data: {use_real_data}")
+        logger.info(f"Entry ID: {entry_id if entry_id else 'Not specified'}")
+        
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(status_code=500, detail="Failed to import Reddit poster module")
+        
+        # Get test data
+        if use_real_data:
+            if entry_id:
+                # Get specific entry
+                changelogs = await get_changelog(all=True)
+                entry = next((e for e in changelogs["changelogs"] if e["id"] == entry_id), None)
+                if not entry:
+                    raise HTTPException(status_code=404, detail=f"Changelog entry {entry_id} not found")
+                test_data = entry
+            else:
+                # Get latest entry
+                changelogs = await get_changelog(all=False)
+                if not changelogs["changelogs"]:
+                    raise HTTPException(status_code=404, detail="No changelog entries found")
+                test_data = changelogs["changelogs"][0]
+        else:
+            # Use mock data
+            test_data = {
+                "id": "test_entry_" + datetime.now().strftime("%Y%m%d%H%M%S"),
+                "author": "Test Author",
+                "timestamp": datetime.now().isoformat(),
+                "content": "# Test Changelog Entry\n\nThis is a test changelog entry for Reddit posting functionality.\n\n- Added feature A\n- Fixed bug B\n- Improved performance of C"
+            }
+        
+        logger.info(f"Test data prepared: Entry ID '{test_data['id']}' by {test_data['author']}")
+        
+        if test_mode:
+            # Simulation mode - don't actually post to Reddit
+            logger.info("TEST MODE: Simulating Reddit post without actually posting")
+            
+            # Format the post as it would appear on Reddit
+            formatted_content = reddit_poster.format_changelog_for_reddit(
+                test_data["content"],
+                test_data["timestamp"],
+                test_data["author"],
+                test_data["id"]
+            )
+            
+            # Extract title as it would be created
+            content_lines = test_data["content"].split('\n')
+            title_text = next((line for line in content_lines if line.strip()), "Heroes' Journey Update")
+            title = f"Update: {title_text[:80]}" if len(title_text) > 80 else f"Update: {title_text}"
+            
+            return {
+                "status": "success",
+                "message": "Test completed successfully in simulation mode",
+                "test_details": {
+                    "mode": "simulation",
+                    "entry_id": test_data["id"],
+                    "would_post_to_subreddit": os.getenv('REDDIT_SUBREDDIT', 'N/A'),
+                    "post_title": title,
+                    "formatted_content": formatted_content,
+                    "reddit_credentials_configured": all([
+                        os.getenv('REDDIT_CLIENT_ID'),
+                        os.getenv('REDDIT_CLIENT_SECRET'),
+                        os.getenv('REDDIT_USERNAME'),
+                        os.getenv('REDDIT_PASSWORD'),
+                        os.getenv('REDDIT_SUBREDDIT')
+                    ])
+                }
+            }
+        else:
+            # Actually post to Reddit
+            logger.info("LIVE MODE: Actually posting to Reddit")
+            
+            # This would actually post to Reddit
+            success, message = reddit_poster.post_changelog_to_reddit(test_data)
+            
+            return {
+                "status": "success" if success else "error",
+                "message": message,
+                "test_details": {
+                    "mode": "live",
+                    "entry_id": test_data["id"],
+                    "posted_to_subreddit": os.getenv('REDDIT_SUBREDDIT', 'N/A')
+                }
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in Reddit test: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Test error: {str(e)}")
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
