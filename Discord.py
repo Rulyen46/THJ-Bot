@@ -175,6 +175,7 @@ async def on_message(message):
             await update_changelog_file(message)
             logger.info("Successfully updated changelog.md file")
 
+            
             # Post to Reddit
             try:
                 reddit_poster = import_reddit_poster()
@@ -187,6 +188,7 @@ async def on_message(message):
                         "content": message.content
                     }
 
+                    
                     # Post to Reddit as a new post
                     success, result_message = reddit_poster.post_changelog_to_reddit(entry)
                     if success:
