@@ -19,6 +19,7 @@ import re
 import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
+import importlib.util
 
 # Configure logging for Azure
 logging.basicConfig(
@@ -39,7 +40,8 @@ for handler in root_logger.handlers[:]:
 
 # Add stdout handler to root logger
 stdout_handler = logging.StreamHandler(sys.stdout)
-stdout_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+stdout_handler.setFormatter(logging.Formatter(
+    '%(asctime)s [%(levelname)s] %(message)s'))
 root_logger.addHandler(stdout_handler)
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,7 @@ logger.info("Current working directory: %s", os.getcwd())
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID')) 
+CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID'))
 EXP_BOOST_CHANNEL_ID = os.getenv('EXP_BOOST_CHANNEL_ID')
 PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')
 
@@ -60,12 +62,13 @@ PATCHER_TOKEN = os.getenv('PATCHER_TOKEN')
 if EXP_BOOST_CHANNEL_ID:
     EXP_BOOST_CHANNEL_ID = int(EXP_BOOST_CHANNEL_ID)
 else:
-    logger.warning("EXP_BOOST_CHANNEL_ID not set - exp boost functionality will be disabled")
+    logger.warning(
+        "EXP_BOOST_CHANNEL_ID not set - exp boost functionality will be disabled")
 
 # Wiki variables
 WIKI_API_URL = os.getenv('WIKI_API_URL')
 WIKI_API_KEY = os.getenv('WIKI_API_KEY')
-WIKI_PAGE_ID = os.getenv('WIKI_PAGE_ID') 
+WIKI_PAGE_ID = os.getenv('WIKI_PAGE_ID')
 
 # Ensure we use the port provided by Azure
 PORT = int(os.getenv('PORT', '80'))
@@ -83,6 +86,7 @@ CHANGELOG_PATH = "/app/changelog.md"
 # Add path for ServerStatus.md
 SERVER_STATUS_PATH = "/app/ServerStatus.md"
 
+
 def mask_sensitive_string(s: str) -> str:
     """Mask sensitive string by showing only first and last 4 characters"""
     if not s:
@@ -90,6 +94,7 @@ def mask_sensitive_string(s: str) -> str:
     if len(s) <= 8:
         return "*" * len(s)
     return f"{s[:4]}...{s[-4:]}"
+
 
 # Verify required environment variables
 print("\n=== Environment Check ===")
@@ -131,12 +136,13 @@ client = discord.Client(intents=intents)
 changelog_channel = None
 exp_boost_channel = None
 
+
 @client.event
 async def on_ready():
     """Handle Discord client ready event"""
     global changelog_channel, exp_boost_channel
     logger.info('🤖 Bot connected successfully!')
-    
+
     for guild in client.guilds:
         for channel in guild.channels:
             if channel.id == CHANGELOG_CHANNEL_ID:
@@ -145,22 +151,23 @@ async def on_ready():
             elif channel.id == EXP_BOOST_CHANNEL_ID:
                 exp_boost_channel = channel
                 logger.info('✅ Found exp boost channel: %s', channel.name)
-    
+
     if not changelog_channel:
         logger.error('❌ Could not find changelog channel!')
     if not exp_boost_channel:
         logger.error('❌ Could not find exp boost channel!')
 
+
 class APILoggingMiddleware(BaseHTTPMiddleware):
     """Middleware to log all API requests with detailed information"""
-    
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Get client IP - works with X-Forwarded-For header for proxied requests
         client_ip = request.client.host
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
             client_ip = forwarded.split(",")[0].strip()
-        
+
         # Get auth status (authenticated or anonymous)
         auth_status = "anonymous"
         if "X-Patcher-Token" in request.headers:
@@ -168,23 +175,24 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
             token_value = request.headers["X-Patcher-Token"]
             masked_token = mask_sensitive_string(token_value)
             auth_status = "authenticated" if token_value == PATCHER_TOKEN else f"invalid_token({masked_token})"
-        
+
         # Log the request start
         request_id = f"{int(time.time() * 1000)}-{os.urandom(4).hex()}"
-        logger.info(f"API Request #{request_id} | {request.method} {request.url.path} | From: {client_ip} | Auth: {auth_status}")
-        
+        logger.info(
+            f"API Request #{request_id} | {request.method} {request.url.path} | From: {client_ip} | Auth: {auth_status}")
+
         # Process the request and measure time
         start_time = time.time()
         try:
             response = await call_next(request)
             process_time = time.time() - start_time
-            
+
             # Log successful response
             logger.info(
                 f"API Response #{request_id} | {request.method} {request.url.path} | "
                 f"Status: {response.status_code} | Time: {process_time:.3f}s | Size: {response.headers.get('content-length', 'unknown')}"
             )
-            
+
             return response
         except Exception as e:
             # Log exceptions
@@ -195,6 +203,7 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
             )
             raise
 
+
 # Set up FastAPI
 app = FastAPI()
 
@@ -204,6 +213,7 @@ app.add_middleware(APILoggingMiddleware)
 # Set up security
 api_key_header = APIKeyHeader(name="X-Patcher-Token", auto_error=True)
 
+
 async def verify_token(api_key: str = Security(api_key_header)):
     if api_key != PATCHER_TOKEN:
         raise HTTPException(
@@ -212,10 +222,12 @@ async def verify_token(api_key: str = Security(api_key_header)):
         )
     return api_key
 
+
 @app.on_event("startup")
 async def on_startup():
     """Initialize the application."""
     logger.info("FastAPI application starting up...")
+
 
 @app.on_event("startup")
 async def create_changelog_on_startup():
@@ -223,31 +235,32 @@ async def create_changelog_on_startup():
     try:
         logger.info("Checking for changelog.md file...")
         file_existed = os.path.exists(CHANGELOG_PATH)
-        
+
         if not file_existed:
             logger.info("changelog.md not found. Creating initial file...")
-            
+
             # Create a simple initial markdown file
             markdown_content = "# Changelog\n\n"
             markdown_content += "This file will be populated with changelog entries.\n\n"
-            
+
             # Save to a Markdown file
             with open(CHANGELOG_PATH, "w") as md_file:
                 md_file.write(markdown_content)
-            
+
             logger.info("✅ Initial changelog.md created successfully!")
         else:
             logger.info(f"✓ changelog.md already exists at {CHANGELOG_PATH}")
-        
+
         # Now populate the file with changelog data from Discord
         logger.info("Fetching all changelogs to populate the file...")
         try:
             # Wait a bit for the Discord client to be ready
             await asyncio.sleep(5)
-            
+
             if client.is_ready() and changelog_channel:
                 # Fetch all messages directly from Discord
-                logger.info("Fetching messages from Discord changelog channel...")
+                logger.info(
+                    "Fetching messages from Discord changelog channel...")
                 messages = []
                 async for message in changelog_channel.history(limit=None):
                     # Check if the message has meaningful content
@@ -258,13 +271,14 @@ async def create_changelog_on_startup():
                             "author": message.author.display_name,
                             "timestamp": message.created_at.isoformat()
                         })
-                
+
                 if messages:
-                    logger.info(f"Found {len(messages)} changelog entries, updating the file...")
-                    
+                    logger.info(
+                        f"Found {len(messages)} changelog entries, updating the file...")
+
                     # Sort messages by ID (chronological order)
                     messages.sort(key=lambda x: int(x["id"]))
-                    
+
                     # Generate Markdown content
                     markdown_content = "# Changelog\n\n"
                     for log in messages:
@@ -273,23 +287,30 @@ async def create_changelog_on_startup():
                         markdown_content += f"**Date:** {log['timestamp']}\n\n"
                         markdown_content += f"{log['content']}\n\n"
                         markdown_content += "---\n\n"
-                    
+
                     # Save to the markdown file
                     with open(CHANGELOG_PATH, "w") as md_file:
                         md_file.write(markdown_content)
-                    
-                    logger.info("✅ Successfully populated changelog.md with all entries!")
+
+                    logger.info(
+                        "✅ Successfully populated changelog.md with all entries!")
                 else:
-                    logger.info("No changelog entries found to populate the file.")
+                    logger.info(
+                        "No changelog entries found to populate the file.")
             else:
-                logger.warning("Discord client or changelog channel not ready, skipping automatic population")
-                logger.info("The file will be populated when you call /generate-markdown endpoint manually")
+                logger.warning(
+                    "Discord client or changelog channel not ready, skipping automatic population")
+                logger.info(
+                    "The file will be populated when you call /generate-markdown endpoint manually")
         except Exception as e:
-            logger.error(f"Error populating changelog.md with entries: {str(e)}")
-            logger.info("You can still manually update using the /generate-markdown endpoint")
-            
+            logger.error(
+                f"Error populating changelog.md with entries: {str(e)}")
+            logger.info(
+                "You can still manually update using the /generate-markdown endpoint")
+
     except Exception as e:
         logger.error(f"Error managing changelog.md file: {str(e)}")
+
 
 @app.on_event("startup")
 async def create_server_status_on_startup():
@@ -297,50 +318,53 @@ async def create_server_status_on_startup():
     try:
         logger.info("Checking for ServerStatus.md file...")
         file_existed = os.path.exists(SERVER_STATUS_PATH)
-        
+
         if not file_existed:
             logger.info("ServerStatus.md not found. Creating initial file...")
-            
+
             # Create a simple initial markdown file
             markdown_content = "# Server Status\n\n"
             markdown_content += "## EXP Boost Status\n\n"
             markdown_content += "No EXP boost status available yet.\n"
-            
+
             # Save to a Markdown file
             with open(SERVER_STATUS_PATH, "w") as md_file:
                 md_file.write(markdown_content)
-            
+
             logger.info("✅ Initial ServerStatus.md created successfully!")
         else:
-            logger.info(f"✓ ServerStatus.md already exists at {SERVER_STATUS_PATH}")
-        
+            logger.info(
+                f"✓ ServerStatus.md already exists at {SERVER_STATUS_PATH}")
+
         # Now populate the file with the latest EXP boost data from Discord
         logger.info("Fetching latest EXP boost status to populate the file...")
         try:
             # Wait a bit for the Discord client to be ready
             await asyncio.sleep(5)
-            
+
             if client.is_ready() and exp_boost_channel:
                 # Fetch the latest message directly from Discord
-                logger.info("Fetching message from Discord EXP boost channel...")
+                logger.info(
+                    "Fetching message from Discord EXP boost channel...")
                 messages = [message async for message in exp_boost_channel.history(limit=1)]
-                
+
                 if messages:
                     latest_message = messages[0]
-                    
+
                     # Generate the entry
-                    logger.info("Creating ServerStatus.md entry from latest message...")
+                    logger.info(
+                        "Creating ServerStatus.md entry from latest message...")
                     markdown_content = "# Server Status\n\n"
                     markdown_content += "## EXP Boost Status\n\n"
                     markdown_content += f"**Message ID:** {latest_message.id}\n"
                     markdown_content += f"**Author:** {latest_message.author.display_name}\n"
                     markdown_content += f"**Last Updated:** {latest_message.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     markdown_content += f"**Status:** {latest_message.content.strip()}\n"
-                    
+
                     # Save to the markdown file
                     with open(SERVER_STATUS_PATH, "w") as md_file:
                         md_file.write(markdown_content)
-                    
+
                     # Also save the last EXP boost message info
                     data = {
                         "id": str(latest_message.id),
@@ -349,24 +373,31 @@ async def create_server_status_on_startup():
                         "timestamp": latest_message.created_at.isoformat(),
                         "processed_at": datetime.now().isoformat()
                     }
-                    
+
                     try:
                         with open("/app/last_exp_boost.json", "w") as f:
                             json.dump(data, f, indent=2)
                     except Exception as e:
-                        logger.error(f"Error saving last_exp_boost.json: {str(e)}")
-                    
-                    logger.info("✅ Successfully populated ServerStatus.md with latest EXP boost status!")
+                        logger.error(
+                            f"Error saving last_exp_boost.json: {str(e)}")
+
+                    logger.info(
+                        "✅ Successfully populated ServerStatus.md with latest EXP boost status!")
                 else:
-                    logger.info("No EXP boost entries found to populate the file.")
+                    logger.info(
+                        "No EXP boost entries found to populate the file.")
             else:
-                logger.warning("Discord client or exp_boost_channel not ready, skipping automatic population")
-                logger.info("The file will be populated when a new message arrives in the EXP boost channel")
+                logger.warning(
+                    "Discord client or exp_boost_channel not ready, skipping automatic population")
+                logger.info(
+                    "The file will be populated when a new message arrives in the EXP boost channel")
         except Exception as e:
-            logger.error(f"Error populating ServerStatus.md with latest status: {str(e)}")
-            
+            logger.error(
+                f"Error populating ServerStatus.md with latest status: {str(e)}")
+
     except Exception as e:
         logger.error(f"Error managing ServerStatus.md file: {str(e)}")
+
 
 @app.get("/changelog/markdown", dependencies=[Depends(verify_token)])
 async def serve_changelog_markdown(download: bool = False):
@@ -377,13 +408,13 @@ async def serve_changelog_markdown(download: bool = False):
     """
     if not os.path.exists(CHANGELOG_PATH):
         await create_changelog_on_startup()
-    
+
     filename = "changelog.md"
-    
+
     if download:
         # Set Content-Disposition to attachment to force download
         return FileResponse(
-            CHANGELOG_PATH, 
+            CHANGELOG_PATH,
             media_type="text/markdown",
             filename=filename,
             headers={"Content-Disposition": f"attachment; filename={filename}"}
@@ -391,6 +422,7 @@ async def serve_changelog_markdown(download: bool = False):
     else:
         # Default behavior - view in browser
         return FileResponse(CHANGELOG_PATH, media_type="text/markdown")
+
 
 @app.get("/serverstatus/markdown", dependencies=[Depends(verify_token)])
 async def serve_server_status_markdown(download: bool = False):
@@ -401,13 +433,13 @@ async def serve_server_status_markdown(download: bool = False):
     """
     if not os.path.exists(SERVER_STATUS_PATH):
         await create_server_status_on_startup()
-    
+
     filename = "ServerStatus.md"
-    
+
     if download:
         # Set Content-Disposition to attachment to force download
         return FileResponse(
-            SERVER_STATUS_PATH, 
+            SERVER_STATUS_PATH,
             media_type="text/markdown",
             filename=filename,
             headers={"Content-Disposition": f"attachment; filename={filename}"}
@@ -415,6 +447,7 @@ async def serve_server_status_markdown(download: bool = False):
     else:
         # Default behavior - view in browser
         return FileResponse(SERVER_STATUS_PATH, media_type="text/markdown")
+
 
 @app.post("/generate-markdown", dependencies=[Depends(verify_token)])
 async def generate_markdown():
@@ -426,20 +459,21 @@ async def generate_markdown():
         # Get changelogs
         changelogs_response = await get_changelog(all=True)
         changelogs = changelogs_response.get("changelogs", [])
-        
+
         # Generate Markdown content
         markdown_content = "# Changelog\n\n"
         for log in changelogs:
             markdown_content += f"## Entry {log['id']}\n{log['content']}\n\n"
-        
+
         # Save to a Markdown file
         with open(CHANGELOG_PATH, "w") as md_file:
             md_file.write(markdown_content)
-        
+
         return {"status": "success", "message": "Markdown file generated."}
     except Exception as e:
         logger.error(f"Error generating markdown: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/exp-boost", dependencies=[Depends(verify_token)])
 async def get_exp_boost():
@@ -451,26 +485,27 @@ async def get_exp_boost():
         # Check if the ServerStatus file exists
         if not os.path.exists(SERVER_STATUS_PATH):
             await create_server_status_on_startup()
-            
+
             # If we still don't have a file, return an error
             if not os.path.exists(SERVER_STATUS_PATH):
-                raise HTTPException(status_code=404, detail="ServerStatus.md file not found")
-        
+                raise HTTPException(
+                    status_code=404, detail="ServerStatus.md file not found")
+
         # Read the ServerStatus file content
         with open(SERVER_STATUS_PATH, "r") as md_file:
             content = md_file.read()
-        
+
         # Extract the EXP boost status information using regex
         # Updated pattern to match the new format that captures the channel name
         exp_boost_pattern = r"## EXP Boost Status\s+\n\*\*Channel ID:\*\* (\d+)\s+\n\*\*Channel Name:\*\* (.*?)\s+\n\*\*Last Updated:\*\* (.*?)\s+\n\*\*Status:\*\* (.*?)(?=\n\n|\Z)"
         match = re.search(exp_boost_pattern, content)
-        
+
         if match:
             channel_id = match.group(1)
             channel_name = match.group(2)
             last_updated = match.group(3)
             status = match.group(4).strip()
-            
+
             return {
                 "status": "success",
                 "exp_boost": {
@@ -490,10 +525,11 @@ async def get_exp_boost():
                     "value": "No EXP boost status available"
                 }
             }
-        
+
     except Exception as e:
         logger.error(f"Error fetching EXP boost status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/expbonus", dependencies=[Depends(verify_token)])
 async def get_exp_bonus():
@@ -504,6 +540,7 @@ async def get_exp_bonus():
     logger.info("Redirecting /expbonus request to /exp-boost endpoint")
     return await get_exp_boost()
 
+
 @app.get("/serverstatus", dependencies=[Depends(verify_token)])
 async def get_server_status():
     """
@@ -512,39 +549,42 @@ async def get_server_status():
     """
     try:
         logger.info("\n=== Fetching Server Status ===")
-        
+
         # Use the same proxy URL as the JS code
         proxy_url = "https://api.codetabs.com/v1/proxy?quest=http://login.projecteq.net/servers/list"
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.get(proxy_url) as response:
                 if response.status != 200:
-                    logger.error(f"Failed to fetch server status. Status: {response.status}")
+                    logger.error(
+                        f"Failed to fetch server status. Status: {response.status}")
                     raise HTTPException(
                         status_code=503,
                         detail="Failed to fetch server status"
                     )
-                
+
                 data = await response.json()
                 logger.info("Successfully fetched server data")
-                
+
                 # Find the Heroes' Journey server
                 server = next(
-                    (s for s in data if "Heroes' Journey [Multiclass" in s.get('server_long_name', '')),
+                    (s for s in data if "Heroes' Journey [Multiclass" in s.get(
+                        'server_long_name', '')),
                     None
                 )
-                
+
                 if not server:
-                    logger.warning("Heroes' Journey server not found in response")
+                    logger.warning(
+                        "Heroes' Journey server not found in response")
                     return {
                         "status": "success",
                         "found": False,
                         "message": "Server not found in response"
                     }
-                
+
                 logger.info(f"Found server: {server.get('server_long_name')}")
                 logger.info(f"Players online: {server.get('players_online')}")
-                
+
                 return {
                     "status": "success",
                     "found": True,
@@ -554,7 +594,7 @@ async def get_server_status():
                         "last_updated": datetime.now().isoformat()
                     }
                 }
-                
+
     except aiohttp.ClientError as e:
         logger.error(f"Network error fetching server status: {str(e)}")
         raise HTTPException(
@@ -568,6 +608,7 @@ async def get_server_status():
             detail=str(e)
         )
 
+
 @app.get("/last-message", dependencies=[Depends(verify_token)])
 async def get_last_message():
     """
@@ -577,27 +618,27 @@ async def get_last_message():
     try:
         print("\n=== Attempting to read last message ===")
         print(f"Channel ID we're looking for: {CHANGELOG_CHANNEL_ID}")
-        
+
         if not client.is_ready():
             print("Discord client is not ready")
             return {"status": "error", "message": "Discord client is not ready"}
-            
+
         if not changelog_channel:
             print("Changelog channel not found")
             return {"status": "error", "message": "Changelog channel not found"}
-            
+
         print(f"Found channel: {changelog_channel.name}")
-        
+
         # Get the last message
         messages = [message async for message in changelog_channel.history(limit=1)]
-        
+
         if not messages:
             print("No messages found")
             return {"status": "success", "message": "No messages found"}
-            
+
         last_message = messages[0]
         print(f"Found message: {last_message.content[:100]}...")
-        
+
         return {
             "status": "success",
             "message": {
@@ -607,11 +648,12 @@ async def get_last_message():
                 "id": last_message.id
             }
         }
-        
+
     except Exception as e:
         print(f"Error reading last message: {str(e)}")
         print(f"Full error details: {repr(e)}")
         return {"status": "error", "message": str(e)}
+
 
 @app.get("/patcher/latest", dependencies=[Depends(verify_token)])
 async def get_latest_for_patcher():
@@ -622,30 +664,32 @@ async def get_latest_for_patcher():
     """
     try:
         print("\n=== Patcher requesting latest changelog ===")
-        
+
         if not client.is_ready():
-            raise HTTPException(status_code=503, detail="Discord client is not ready")
-            
+            raise HTTPException(
+                status_code=503, detail="Discord client is not ready")
+
         if not changelog_channel:
-            raise HTTPException(status_code=503, detail="Changelog channel not found")
-            
+            raise HTTPException(
+                status_code=503, detail="Changelog channel not found")
+
         messages = [message async for message in changelog_channel.history(limit=1)]
-        
+
         if not messages:
             return {
                 "status": "success",
                 "found": False,
                 "message": "No changelog entries found"
             }
-            
+
         last_message = messages[0]
-        
+
         formatted_content = format_changelog_for_wiki(
             last_message.content,
             last_message.created_at,
             last_message.author.display_name
         )
-        
+
         return {
             "status": "success",
             "found": True,
@@ -657,11 +701,12 @@ async def get_latest_for_patcher():
                 "message_id": str(last_message.id)
             }
         }
-        
+
     except Exception as e:
         print(f"Error in patcher endpoint: {str(e)}")
         print(f"Full error details: {repr(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/changelog/{message_id}", dependencies=[Depends(verify_token)])
 @app.get("/changelog", dependencies=[Depends(verify_token)])
@@ -679,37 +724,39 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
     """
     try:
         logger.info("\n=== Fetching Changelogs from local file ===")
-        
+
         # Check if the changelog file exists
         if not os.path.exists(CHANGELOG_PATH):
             logger.error("Changelog file not found")
-            raise HTTPException(status_code=404, detail="Changelog file not found")
-        
+            raise HTTPException(
+                status_code=404, detail="Changelog file not found")
+
         # Read the changelog file content
         with open(CHANGELOG_PATH, "r") as md_file:
             content = md_file.read()
-        
+
         # Parse the content into changelog entries with complete raw content
         messages = []
-        
+
         # Use regex pattern to find entries
         entry_pattern = r"## Entry (\d+)[\s\S]*?(?=\n## Entry|$)"
         entry_matches = re.finditer(entry_pattern, content)
-        
+
         for match in entry_matches:
             full_entry = match.group(0).strip()
             entry_id = match.group(1)
-            
+
             # Extract author and date
             author_match = re.search(r"\*\*Author:\*\* (.*?)\n", full_entry)
             date_match = re.search(r"\*\*Date:\*\* (.*?)\n", full_entry)
-            
+
             author = author_match.group(1) if author_match else "Unknown"
             timestamp = date_match.group(1) if date_match else "Unknown"
-            
+
             # Get content part (everything after the header metadata)
-            content_part = re.sub(r"^## Entry \d+\s+\*\*Author:\*\* .*?\s+\*\*Date:\*\* .*?\s+\n", "", full_entry, flags=re.DOTALL)
-            
+            content_part = re.sub(
+                r"^## Entry \d+\s+\*\*Author:\*\* .*?\s+\*\*Date:\*\* .*?\s+\n", "", full_entry, flags=re.DOTALL)
+
             messages.append({
                 "id": entry_id,
                 "content": content_part.strip(),
@@ -717,41 +764,47 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
                 "timestamp": timestamp,
                 "raw": full_entry
             })
-        
+
         # Log a summary instead of each individual entry
         entry_ids = [m["id"] for m in messages]
         if entry_ids:
-            logger.info(f"Found {len(entry_ids)} changelog entries (IDs from {entry_ids[0]} to {entry_ids[-1]})")
+            logger.info(
+                f"Found {len(entry_ids)} changelog entries (IDs from {entry_ids[0]} to {entry_ids[-1]})")
         else:
             logger.info("No changelog entries found")
-        
+
         # Sort messages by ID (chronological order)
         messages.sort(key=lambda x: int(x["id"]))
-        
+
         # Filter based on message_id if provided
         if message_id:
             try:
                 reference_id = int(message_id)
-                filtered_messages = [m for m in messages if int(m["id"]) > reference_id]
-                logger.info(f"Filtered to {len(filtered_messages)} entries after ID: {reference_id}")
+                filtered_messages = [
+                    m for m in messages if int(m["id"]) > reference_id]
+                logger.info(
+                    f"Filtered to {len(filtered_messages)} entries after ID: {reference_id}")
                 messages = filtered_messages
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid message ID format")
+                raise HTTPException(
+                    status_code=400, detail="Invalid message ID format")
         elif not all:
             # If not all and no message_id, get only the latest
             if messages:
                 messages = [messages[-1]]
-                logger.info(f"Returning only the latest changelog: {messages[0]['id']}")
-        
+                logger.info(
+                    f"Returning only the latest changelog: {messages[0]['id']}")
+
         return {
             "status": "success",
             "changelogs": messages,
             "total": len(messages)
         }
-        
+
     except Exception as e:
         logger.error(f"Error fetching changelogs: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/wiki/update-changelog", dependencies=[Depends(verify_token)])
 async def update_wiki_with_all_changelogs():
@@ -760,33 +813,33 @@ async def update_wiki_with_all_changelogs():
     Requires X-Patcher-Token header for authentication.
     """
     print("\n=== Starting Wiki Changelog Update ===")
-    
+
     # Check if wiki integration is configured
     if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
         raise HTTPException(
             status_code=500,
             detail="Wiki integration is not fully configured. Please set WIKI_API_URL, WIKI_API_KEY, and WIKI_PAGE_ID."
         )
-    
+
     try:
         # Get all changelogs using existing endpoint logic
         changelogs = await get_changelog(all=True)
-        
+
         if not changelogs["total"]:
             return {
                 "status": "success",
                 "message": "No changelogs found to update"
             }
-        
+
         # Format all changelogs for wiki
         formatted_content = "# Changelog\n\n"
         for changelog in changelogs["changelogs"]:
             formatted_content += changelog["formatted_content"]
-        
+
         # Update the wiki page
         page_id = int(WIKI_PAGE_ID)
         success = await update_wiki_page(formatted_content, page_id)
-        
+
         if success:
             return {
                 "status": "success",
@@ -798,10 +851,11 @@ async def update_wiki_with_all_changelogs():
                 status_code=500,
                 detail="Failed to update wiki page"
             )
-            
+
     except Exception as e:
         print(f"❌ Error updating wiki with changelogs: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 async def update_wiki_page(content: str, page_id: int) -> bool:
     """
@@ -811,24 +865,25 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
     try:
         logger.info(f"\n=== Wiki Page Update Process ===")
         logger.info(f"Target Page ID: {page_id}")
-        
+
         # Validate content
         if not content or not isinstance(content, str):
             logger.error("Invalid content provided to update_wiki_page")
             return False
-        
+
         headers = {
             'Authorization': f'Bearer {WIKI_API_KEY}',
             'Content-Type': 'application/json'
         }
-        
+
         # Log detailed content analysis
         logger.info("Content Analysis:")
         logger.info(f"- Total length: {len(content)} characters")
         logger.info(f"- First 100 chars: {content[:100]}")
-        logger.info(f"- Last 100 chars: {content[-100:] if len(content) > 100 else content}")
+        logger.info(
+            f"- Last 100 chars: {content[-100:] if len(content) > 100 else content}")
         logger.info("- Number of lines: {}".format(content.count('\n') + 1))
-        
+
         # Update mutation with isPublished
         update_mutation = """
         mutation UpdatePage($id: Int!, $content: String!) {
@@ -844,18 +899,19 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
           }
         }
         """
-        
+
         variables = {
             "id": page_id,
             "content": content
         }
-        
+
         # Log request details
         logger.info("\nRequest Details:")
         logger.info(f"- API URL: {WIKI_API_URL}")
         logger.info(f"- Update Mutation: {update_mutation.strip()}")
-        logger.info(f"- Variables: id={page_id}, content_length={len(content)}")
-        
+        logger.info(
+            f"- Variables: id={page_id}, content_length={len(content)}")
+
         async with aiohttp.ClientSession() as session:
             # Step 1: Update content with isPublished
             logger.info("\nExecuting update mutation...")
@@ -866,28 +922,34 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
             ) as response:
                 response_status = response.status
                 response_data = await response.json()
-                
+
                 logger.info(f"\nUpdate Response Analysis:")
                 logger.info(f"- HTTP Status: {response_status}")
-                logger.info(f"- Raw Response: {json.dumps(response_data, indent=2)}")
-                
+                logger.info(
+                    f"- Raw Response: {json.dumps(response_data, indent=2)}")
+
                 if 'errors' in response_data:
                     logger.error("\nGraphQL Errors in update:")
                     for error in response_data['errors']:
                         logger.error(f"- Path: {error.get('path', 'N/A')}")
-                        logger.error(f"- Message: {error.get('message', 'N/A')}")
-                        logger.error(f"- Extensions: {error.get('extensions', {})}")
+                        logger.error(
+                            f"- Message: {error.get('message', 'N/A')}")
+                        logger.error(
+                            f"- Extensions: {error.get('extensions', {})}")
                     return False
-                
-                update_result = response_data.get('data', {}).get('pages', {}).get('update', {}).get('responseResult', {})
-                
+
+                update_result = response_data.get('data', {}).get(
+                    'pages', {}).get('update', {}).get('responseResult', {})
+
                 # Continue even if we get the map error, as we know the update still works
                 if update_result.get('message') == "Cannot read properties of undefined (reading 'map')":
-                    logger.warning("\n⚠️ Received 'map' error but continuing as this is expected")
+                    logger.warning(
+                        "\n⚠️ Received 'map' error but continuing as this is expected")
                 elif not update_result.get('succeeded', False):
-                    logger.error(f"\n❌ Failed to update page: {update_result.get('message', 'Unknown error')}")
+                    logger.error(
+                        f"\n❌ Failed to update page: {update_result.get('message', 'Unknown error')}")
                     return False
-                
+
                 # Step 2: Render the page
                 render_mutation = """
                 mutation RenderPage($id: Int!) {
@@ -901,45 +963,52 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
                   }
                 }
                 """
-                
+
                 render_variables = {
                     "id": page_id
                 }
-                
+
                 logger.info("\nExecuting render mutation...")
                 async with session.post(
                     WIKI_API_URL,
-                    json={"query": render_mutation, "variables": render_variables},
+                    json={"query": render_mutation,
+                          "variables": render_variables},
                     headers=headers
                 ) as render_response:
                     render_status = render_response.status
                     render_data = await render_response.json()
-                    
+
                     logger.info(f"\nRender Response Analysis:")
                     logger.info(f"- HTTP Status: {render_status}")
-                    logger.info(f"- Raw Response: {json.dumps(render_data, indent=2)}")
-                    
+                    logger.info(
+                        f"- Raw Response: {json.dumps(render_data, indent=2)}")
+
                     if 'errors' in render_data:
                         logger.error("\nGraphQL Errors in render:")
                         for error in render_data['errors']:
                             logger.error(f"- Path: {error.get('path', 'N/A')}")
-                            logger.error(f"- Message: {error.get('message', 'N/A')}")
-                            logger.error(f"- Extensions: {error.get('extensions', {})}")
+                            logger.error(
+                                f"- Message: {error.get('message', 'N/A')}")
+                            logger.error(
+                                f"- Extensions: {error.get('extensions', {})}")
                         return False
-                    
-                    render_result = render_data.get('data', {}).get('pages', {}).get('render', {}).get('responseResult', {})
-                    
+
+                    render_result = render_data.get('data', {}).get(
+                        'pages', {}).get('render', {}).get('responseResult', {})
+
                     if not render_result.get('succeeded', False):
-                        logger.error(f"\n❌ Failed to render page: {render_result.get('message', 'Unknown error')}")
+                        logger.error(
+                            f"\n❌ Failed to render page: {render_result.get('message', 'Unknown error')}")
                         return False
-                    
+
                     logger.info("\n✅ Successfully rendered page")
                     return True
-                
+
     except Exception as e:
         logger.error(f"❌ Error in update_wiki_page: {type(e).__name__}")
         logger.error(f"Error details: {str(e)}")
         return False
+
 
 async def start_discord():
     """Start the Discord client"""
@@ -953,6 +1022,7 @@ async def start_discord():
         print(f"\n❌ Connection error: {type(e).__name__}")
         raise
 
+
 async def start_api():
     """Start the FastAPI server"""
     try:
@@ -962,13 +1032,13 @@ async def start_api():
         logger.info(f"PORT env variable: {os.getenv('PORT')}")
         port_to_use = int(os.getenv('PORT', '80'))
         logger.info(f"Using port: {port_to_use}")
-        
+
         # Add a health check endpoint
         @app.get("/health")
         async def health_check():
             """Health check endpoint for Azure"""
             return {"status": "healthy", "timestamp": datetime.now().isoformat()}
-        
+
         # Configure Uvicorn with proper settings for Azure
         config = uvicorn.Config(
             app=app,
@@ -978,10 +1048,10 @@ async def start_api():
             access_log=True,
             timeout_keep_alive=65,  # Increased timeout for Azure health checks
         )
-        
+
         logger.info("Starting Discord client in background...")
         asyncio.create_task(start_discord())
-        
+
         logger.info(f"🚀 Starting FastAPI server...")
         server = uvicorn.Server(config)
         await server.serve()
@@ -989,6 +1059,413 @@ async def start_api():
         logger.error(f"❌ Failed to start FastAPI server: {str(e)}")
         logger.error(f"Error type: {type(e).__name__}")
         raise
+
+
+def import_reddit_poster():
+    """Import the Reddit poster module."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "reddit_poster", "/app/reddit_poster.py")
+        reddit_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reddit_module)
+        return reddit_module
+    except Exception as e:
+        logger.error(f"Error importing Reddit poster: {str(e)}")
+        return None
+
+
+@app.post("/reddit/post-changelog", dependencies=[Depends(verify_token)])
+async def post_to_reddit(create_new: bool = False, title: Optional[str] = None):
+    """
+    Post changelogs to Reddit.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== Posting to Reddit ===")
+
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(
+                status_code=500, detail="Failed to import Reddit poster module")
+
+        # Get changelogs using existing endpoint logic
+        changelogs = await get_changelog(all=True)
+
+        if not changelogs["total"]:
+            return {"status": "error", "message": "No changelogs found to post"}
+
+        # Post to Reddit
+        success, message = reddit_poster.post_changelog_to_reddit(
+            changelogs["changelogs"],
+            create_new,
+            title
+        )
+
+        if success:
+            return {"status": "success", "message": message}
+        else:
+            raise HTTPException(status_code=500, detail=message)
+    except Exception as e:
+        logger.error(f"Error posting to Reddit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/reddit/post-entry/{entry_id}", dependencies=[Depends(verify_token)])
+async def post_entry_to_reddit(entry_id: str):
+    """
+    Post a specific changelog entry to Reddit.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info(f"\n=== Posting Entry {entry_id} to Reddit ===")
+
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(
+                status_code=500, detail="Failed to import Reddit poster module")
+
+        # Get the specific changelog entry
+        changelogs = await get_changelog(all=True)
+
+        # Find the entry with matching ID
+        entry = next(
+            (e for e in changelogs["changelogs"] if e["id"] == entry_id), None)
+
+        if not entry:
+            raise HTTPException(
+                status_code=404, detail=f"Changelog entry {entry_id} not found")
+
+        # Post to Reddit
+        success, message = reddit_poster.post_changelog_to_reddit(entry)
+
+        if success:
+            return {"status": "success", "message": message}
+        else:
+            raise HTTPException(status_code=500, detail=message)
+    except Exception as e:
+        logger.error(f"Error posting to Reddit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/reddit/post-all-entries", dependencies=[Depends(verify_token)])
+async def post_all_entries_to_reddit():
+    """
+    Post all unpublished changelog entries to Reddit.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== Posting All Unpublished Entries to Reddit ===")
+
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(
+                status_code=500, detail="Failed to import Reddit poster module")
+
+        # Get all changelogs
+        changelogs = await get_changelog(all=True)
+
+        if not changelogs["total"]:
+            return {"status": "success", "message": "No changelogs found to post"}
+
+        # Get already posted entries
+        posted_entries = reddit_poster.get_posted_entries()
+        posted_ids = [post["entry_id"]
+                      for post in posted_entries.get("posts", [])]
+
+        # Filter out already posted entries
+        to_post = [entry for entry in changelogs["changelogs"]
+                   if entry["id"] not in posted_ids]
+
+        if not to_post:
+            return {"status": "success", "message": "All entries have already been posted"}
+
+        # Post each entry
+        results = []
+        for entry in to_post:
+            success, message = reddit_poster.post_changelog_to_reddit(entry)
+            results.append({
+                "entry_id": entry["id"],
+                "success": success,
+                "message": message
+            })
+
+            # Add a small delay to avoid hitting Reddit rate limits
+            await asyncio.sleep(2)
+
+        return {
+            "status": "success",
+            "message": f"Posted {len([r for r in results if r['success']])} of {len(to_post)} entries",
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Error posting to Reddit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/reddit/test", dependencies=[Depends(verify_token)])
+async def test_reddit_posting(background_tasks: BackgroundTasks, 
+                              test_mode: bool = True,
+                              use_real_data: bool = False,
+                              entry_id: Optional[str] = None):
+    """
+    Test endpoint for Reddit posting functionality.
+    
+    Parameters:
+    - test_mode: If True, runs in simulation mode without actually posting to Reddit
+    - use_real_data: If True, uses real changelog data; otherwise uses test data
+    - entry_id: If provided, tests with a specific changelog entry
+    
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== TESTING REDDIT INTEGRATION ===")
+        logger.info(f"Test Mode: {test_mode}")
+        logger.info(f"Using Real Data: {use_real_data}")
+        logger.info(f"Entry ID: {entry_id if entry_id else 'Not specified'}")
+        
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(status_code=500, detail="Failed to import Reddit poster module")
+        
+        # Get test data
+        if use_real_data:
+            if entry_id:
+                # Get specific entry
+                changelogs = await get_changelog(all=True)
+                entry = next((e for e in changelogs["changelogs"] if e["id"] == entry_id), None)
+                if not entry:
+                    raise HTTPException(status_code=404, detail=f"Changelog entry {entry_id} not found")
+                test_data = entry
+            else:
+                # Get latest entry
+                changelogs = await get_changelog(all=False)
+                if not changelogs["changelogs"]:
+                    raise HTTPException(status_code=404, detail="No changelog entries found")
+                test_data = changelogs["changelogs"][0]
+        else:
+            # Use mock data
+            test_data = {
+                "id": "test_entry_" + datetime.now().strftime("%Y%m%d%H%M%S"),
+                "author": "Test Author",
+                "timestamp": datetime.now().isoformat(),
+                "content": "# Test Changelog Entry\n\nThis is a test changelog entry for Reddit posting functionality.\n\n- Added feature A\n- Fixed bug B\n- Improved performance of C"
+            }
+        
+        logger.info(f"Test data prepared: Entry ID '{test_data['id']}' by {test_data['author']}")
+        
+        if test_mode:
+            # Simulation mode - don't actually post to Reddit
+            logger.info("TEST MODE: Simulating Reddit post without actually posting")
+            
+            # Format the post as it would appear on Reddit
+            formatted_content = reddit_poster.format_changelog_for_reddit(
+                test_data["content"],
+                test_data["timestamp"],
+                test_data["author"],
+                test_data["id"]
+            )
+            
+            # Extract title as it would be created
+            content_lines = test_data["content"].split('\n')
+            title_text = next((line for line in content_lines if line.strip()), "Heroes' Journey Update")
+            title = f"Update: {title_text[:80]}" if len(title_text) > 80 else f"Update: {title_text}"
+            
+            return {
+                "status": "success",
+                "message": "Test completed successfully in simulation mode",
+                "test_details": {
+                    "mode": "simulation",
+                    "entry_id": test_data["id"],
+                    "would_post_to_subreddit": os.getenv('REDDIT_SUBREDDIT', 'N/A'),
+                    "post_title": title,
+                    "formatted_content": formatted_content,
+                    "preferred_flair": reddit_poster.REDDIT_FLAIR_NAME,
+                    "reddit_credentials_configured": all([
+                        os.getenv('REDDIT_CLIENT_ID'),
+                        os.getenv('REDDIT_CLIENT_SECRET'),
+                        os.getenv('REDDIT_USERNAME'),
+                        os.getenv('REDDIT_PASSWORD'),
+                        os.getenv('REDDIT_SUBREDDIT')
+                    ])
+                }
+            }
+        else:
+            # Actually post to Reddit
+            logger.info("LIVE MODE: Actually posting to Reddit")
+            
+            # This would actually post to Reddit
+            success, message = reddit_poster.post_changelog_to_reddit(test_data)
+            
+            return {
+                "status": "success" if success else "error",
+                "message": message,
+                "test_details": {
+                    "mode": "live",
+                    "entry_id": test_data["id"],
+                    "posted_to_subreddit": os.getenv('REDDIT_SUBREDDIT', 'N/A')
+                }
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in Reddit test: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Test error: {str(e)}")
+
+
+@app.post("/reddit/test-pin/{post_id}", dependencies=[Depends(verify_token)])
+async def test_pin_reddit_post(post_id: str):
+    """
+    Test pinning a specific Reddit post.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info(f"\n=== Testing Pinning of Reddit Post {post_id} ===")
+
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(
+                status_code=500, detail="Failed to import Reddit poster module")
+
+        # Initialize Reddit
+        reddit = reddit_poster.initialize_reddit()
+        if not reddit:
+            raise HTTPException(
+                status_code=500, detail="Failed to initialize Reddit")
+
+        # Get the submission
+        try:
+            submission = reddit.submission(id=post_id)
+
+            # Get the subreddit
+            subreddit = submission.subreddit
+
+            # Check if user is moderator
+            is_mod = False
+            mod_permissions = []
+            for mod in subreddit.moderator():
+                if mod.name.lower() == reddit_poster.REDDIT_USERNAME.lower():
+                    is_mod = True
+                    if hasattr(mod, 'mod_permissions'):
+                        mod_permissions = mod.mod_permissions
+                    break
+
+            # Try to pin
+            pin_success = False
+            pin_error = None
+            if is_mod:
+                try:
+                    submission.mod.sticky()
+                    pin_success = True
+                except Exception as e:
+                    pin_error = str(e)
+                    logger.error(f"Error pinning: {pin_error}")
+
+            return {
+                "status": "success",
+                "post_id": post_id,
+                "post_title": submission.title,
+                "subreddit": f"r/{subreddit.display_name}",
+                "account": reddit_poster.REDDIT_USERNAME,
+                "is_moderator": is_mod,
+                "mod_permissions": mod_permissions,
+                "pin_attempted": is_mod,
+                "pin_successful": pin_success,
+                "pin_error": pin_error
+            }
+
+        except Exception as e:
+            logger.error(f"Error accessing post: {str(e)}")
+            raise HTTPException(
+                status_code=404, detail=f"Could not find or access post: {str(e)}")
+
+    except Exception as e:
+        logger.error(f"Error in pin test: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/reddit/test-flair", dependencies=[Depends(verify_token)])
+async def test_reddit_flair():
+    """
+    Test endpoint to check available flairs and flair permissions.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        logger.info("\n=== TESTING REDDIT FLAIRS ===")
+
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(
+                status_code=500, detail="Failed to import Reddit poster module")
+
+        # Initialize Reddit
+        reddit = reddit_poster.initialize_reddit()
+        if not reddit:
+            raise HTTPException(
+                status_code=500, detail="Failed to initialize Reddit")
+
+        # Get the subreddit
+        subreddit_name = reddit_poster.REDDIT_SUBREDDIT
+        subreddit = reddit.subreddit(subreddit_name)
+
+        # Check moderator status
+        is_mod = False
+        mod_permissions = []
+
+        for mod in subreddit.moderator():
+            if mod.name.lower() == reddit_poster.REDDIT_USERNAME.lower():
+                is_mod = True
+                if hasattr(mod, 'mod_permissions'):
+                    mod_permissions = mod.mod_permissions
+                break
+
+        # Get available flairs
+        try:
+            available_flairs = list(subreddit.flair.link_templates)
+            flair_details = []
+
+            for flair in available_flairs:
+                flair_details.append({
+                    "flair_id": flair.get("id") or flair.get("flair_template_id"),
+                    "text": flair.get("text", "No text"),
+                    "css_class": flair.get("css_class"),
+                    "text_editable": flair.get("text_editable", False),
+                    "background_color": flair.get("background_color"),
+                    "text_color": flair.get("text_color")
+                })
+
+            preferred_flair = reddit_poster.REDDIT_FLAIR_NAME
+            matching_flairs = [f for f in flair_details if f.get(
+                "text", "").lower() == preferred_flair.lower()]
+            has_preferred_flair = len(matching_flairs) > 0
+
+        except Exception as e:
+            logger.error(f"Error getting flairs: {str(e)}")
+            flair_details = []
+            has_preferred_flair = False
+
+        return {
+            "status": "success",
+            "subreddit": f"r/{subreddit_name}",
+            "account": reddit_poster.REDDIT_USERNAME,
+            "is_moderator": is_mod,
+            "mod_permissions": mod_permissions,
+            "can_manage_flair": "flair" in mod_permissions or "all" in mod_permissions if mod_permissions else False,
+            "available_flairs_count": len(flair_details),
+            "available_flairs": flair_details,
+            "preferred_flair": reddit_poster.REDDIT_FLAIR_NAME,
+            "has_preferred_flair": has_preferred_flair,
+            "recommended_action": "The flairs look good!" if has_preferred_flair else f"Add a flair named '{preferred_flair}' to your subreddit or update REDDIT_FLAIR_NAME environment variable"
+        }
+
+    except Exception as e:
+        logger.error(f"Error in flair test: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Test error: {str(e)}")
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()

@@ -17,6 +17,14 @@ services:
       - WIKI_API_URL=${WIKI_API_URL:-}
       - WIKI_API_KEY=${WIKI_API_KEY:-}
       - WIKI_PAGE_ID=${WIKI_PAGE_ID:-}
+      # Optional Reddit variables
+      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID:-}
+      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET:-}
+      - REDDIT_USERNAME=${REDDIT_USERNAME:-}
+      - REDDIT_PASSWORD=${REDDIT_PASSWORD:-}
+      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-}
+      - REDDIT_SUBREDDIT=${REDDIT_SUBREDDIT:-}
+      - REDDIT_FLAIR_NAME=${REDDIT_FLAIR_NAME:-}
     volumes:
       - ./logs:/app/logs
       - .:/app
