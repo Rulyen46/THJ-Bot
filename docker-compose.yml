@@ -47,6 +47,22 @@ services:
     networks:
       - changelog-network
     command: ['python', 'Discord.py']
+    
+  reddit-poster:
+    build: .
+    container_name: reddit-poster
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - CHANGELOG_CHANNEL_ID=${CHANGELOG_CHANNEL_ID}
+    volumes:
+      - ./logs:/app/logs
+      - .:/app
+    networks:
+      - changelog-network
+    command: [python', 'reddit_poster.py']
 
 networks:
   changelog-network:
