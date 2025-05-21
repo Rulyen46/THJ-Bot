@@ -20,6 +20,7 @@ import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 import importlib.util
+import traceback
 
 # Configure logging for Azure
 logging.basicConfig(
