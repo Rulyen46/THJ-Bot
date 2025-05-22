@@ -359,7 +359,9 @@ async def get_reddit_info():
         mod_permissions = []
 
         try:
-            async for mod in subreddit.moderator():
+            # Fix: Await the moderator() call first
+            moderators = await subreddit.moderator()
+            for mod in moderators:
                 if mod.name.lower() == REDDIT_USERNAME.lower():
                     is_mod = True
                     # Get mod permissions if available
@@ -415,7 +417,7 @@ async def get_reddit_info():
         except:
             pass
         return None
-
+    
 async def test_pin_post(post_id):
     """Test pinning a specific Reddit post."""
     reddit = await initialize_reddit()
@@ -433,7 +435,9 @@ async def test_pin_post(post_id):
         is_mod = False
         mod_permissions = []
         try:
-            async for mod in subreddit.moderator():
+            # Fix: Await the moderator() call first
+            moderators = await subreddit.moderator()
+            for mod in moderators:
                 if mod.name.lower() == REDDIT_USERNAME.lower():
                     is_mod = True
                     if hasattr(mod, 'mod_permissions'):
