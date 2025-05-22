@@ -20,6 +20,7 @@ import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 import importlib.util
+import traceback
 
 # Configure logging for Azure
 logging.basicConfig(
@@ -1071,6 +1072,7 @@ def import_reddit_poster():
         return reddit_module
     except Exception as e:
         logger.error(f"Error importing Reddit poster: {str(e)}")
+        logger.error(traceback.format_exc())
         return None
 
 
@@ -1137,8 +1139,8 @@ async def post_entry_to_reddit(entry_id: str):
             raise HTTPException(
                 status_code=404, detail=f"Changelog entry {entry_id} not found")
 
-        # Post to Reddit using async function
-        success, message = await reddit_poster.post_changelog_to_reddit(entry)
+        # Post to Reddit
+        success, message = reddit_poster.post_changelog_to_reddit(entry)
 
         if success:
             return {"status": "success", "message": message}
@@ -1182,10 +1184,10 @@ async def post_all_entries_to_reddit():
         if not to_post:
             return {"status": "success", "message": "All entries have already been posted"}
 
-        # Post each entry using async function
+        # Post each entry
         results = []
         for entry in to_post:
-            success, message = await reddit_poster.post_changelog_to_reddit(entry)
+            success, message = reddit_poster.post_changelog_to_reddit(entry)
             results.append({
                 "entry_id": entry["id"],
                 "success": success,
@@ -1294,11 +1296,11 @@ async def test_reddit_posting(background_tasks: BackgroundTasks,
                 }
             }
         else:
-            # Actually post to Reddit using async function
+            # Actually post to Reddit
             logger.info("LIVE MODE: Actually posting to Reddit")
             
-            # This would actually post to Reddit - NOW ASYNC
-            success, message = await reddit_poster.post_changelog_to_reddit(test_data)
+            # This would actually post to Reddit
+            success, message = reddit_poster.post_changelog_to_reddit(test_data)
             
             return {
                 "status": "success" if success else "error",
@@ -1331,16 +1333,57 @@ async def test_pin_reddit_post(post_id: str):
             raise HTTPException(
                 status_code=500, detail="Failed to import Reddit poster module")
 
-        # Test pinning using async function
-        result = await reddit_poster.test_pin_post(post_id)
-        
-        if result is None:
-            raise HTTPException(status_code=404, detail="Could not find or access post")
-        
-        return {
-            "status": "success",
-            **result
-        }
+        # Initialize Reddit
+        reddit = reddit_poster.initialize_reddit()
+        if not reddit:
+            raise HTTPException(
+                status_code=500, detail="Failed to initialize Reddit")
+
+        # Get the submission
+        try:
+            submission = reddit.submission(id=post_id)
+
+            # Get the subreddit
+            subreddit = submission.subreddit
+
+            # Check if user is moderator
+            is_mod = False
+            mod_permissions = []
+            for mod in subreddit.moderator():
+                if mod.name.lower() == reddit_poster.REDDIT_USERNAME.lower():
+                    is_mod = True
+                    if hasattr(mod, 'mod_permissions'):
+                        mod_permissions = mod.mod_permissions
+                    break
+
+            # Try to pin
+            pin_success = False
+            pin_error = None
+            if is_mod:
+                try:
+                    submission.mod.sticky()
+                    pin_success = True
+                except Exception as e:
+                    pin_error = str(e)
+                    logger.error(f"Error pinning: {pin_error}")
+
+            return {
+                "status": "success",
+                "post_id": post_id,
+                "post_title": submission.title,
+                "subreddit": f"r/{subreddit.display_name}",
+                "account": reddit_poster.REDDIT_USERNAME,
+                "is_moderator": is_mod,
+                "mod_permissions": mod_permissions,
+                "pin_attempted": is_mod,
+                "pin_successful": pin_success,
+                "pin_error": pin_error
+            }
+
+        except Exception as e:
+            logger.error(f"Error accessing post: {str(e)}")
+            raise HTTPException(
+                status_code=404, detail=f"Could not find or access post: {str(e)}")
 
     except Exception as e:
         logger.error(f"Error in pin test: {str(e)}")
@@ -1362,15 +1405,64 @@ async def test_reddit_flair():
             raise HTTPException(
                 status_code=500, detail="Failed to import Reddit poster module")
 
-        # Get Reddit info using async function
-        result = await reddit_poster.get_reddit_info()
-        
-        if result is None:
-            raise HTTPException(status_code=500, detail="Failed to get Reddit information")
-        
+        # Initialize Reddit
+        reddit = reddit_poster.initialize_reddit()
+        if not reddit:
+            raise HTTPException(
+                status_code=500, detail="Failed to initialize Reddit")
+
+        # Get the subreddit
+        subreddit_name = reddit_poster.REDDIT_SUBREDDIT
+        subreddit = reddit.subreddit(subreddit_name)
+
+        # Check moderator status
+        is_mod = False
+        mod_permissions = []
+
+        for mod in subreddit.moderator():
+            if mod.name.lower() == reddit_poster.REDDIT_USERNAME.lower():
+                is_mod = True
+                if hasattr(mod, 'mod_permissions'):
+                    mod_permissions = mod.mod_permissions
+                break
+
+        # Get available flairs
+        try:
+            available_flairs = list(subreddit.flair.link_templates)
+            flair_details = []
+
+            for flair in available_flairs:
+                flair_details.append({
+                    "flair_id": flair.get("id") or flair.get("flair_template_id"),
+                    "text": flair.get("text", "No text"),
+                    "css_class": flair.get("css_class"),
+                    "text_editable": flair.get("text_editable", False),
+                    "background_color": flair.get("background_color"),
+                    "text_color": flair.get("text_color")
+                })
+
+            preferred_flair = reddit_poster.REDDIT_FLAIR_NAME
+            matching_flairs = [f for f in flair_details if f.get(
+                "text", "").lower() == preferred_flair.lower()]
+            has_preferred_flair = len(matching_flairs) > 0
+
+        except Exception as e:
+            logger.error(f"Error getting flairs: {str(e)}")
+            flair_details = []
+            has_preferred_flair = False
+
         return {
             "status": "success",
-            **result
+            "subreddit": f"r/{subreddit_name}",
+            "account": reddit_poster.REDDIT_USERNAME,
+            "is_moderator": is_mod,
+            "mod_permissions": mod_permissions,
+            "can_manage_flair": "flair" in mod_permissions or "all" in mod_permissions if mod_permissions else False,
+            "available_flairs_count": len(flair_details),
+            "available_flairs": flair_details,
+            "preferred_flair": reddit_poster.REDDIT_FLAIR_NAME,
+            "has_preferred_flair": has_preferred_flair,
+            "recommended_action": "The flairs look good!" if has_preferred_flair else f"Add a flair named '{preferred_flair}' to your subreddit or update REDDIT_FLAIR_NAME environment variable"
         }
 
     except Exception as e:
