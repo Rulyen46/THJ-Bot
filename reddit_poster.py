@@ -1,9 +1,10 @@
 import os
-import asyncpraw
 import logging
 from datetime import datetime
 import json
 import traceback
+import asyncpraw
+
 
 # Set up logging
 logging.basicConfig(
@@ -211,15 +212,17 @@ async def manage_pinned_posts(reddit, current_post_id):
         pinned_posts = []
         try:
             sticky_1 = await subreddit.sticky(number=1)
-            pinned_posts.append(sticky_1)
-        except:
-            pass  # No first sticky
+            if sticky_1:
+                pinned_posts.append(sticky_1)
+        except Exception as e:
+            logger.debug(f"No first sticky post: {e}")
             
         try:
             sticky_2 = await subreddit.sticky(number=2)
-            pinned_posts.append(sticky_2)
-        except:
-            pass  # No second sticky
+            if sticky_2:
+                pinned_posts.append(sticky_2)
+        except Exception as e:
+            logger.debug(f"No second sticky post: {e}")
         
         # If we already have 2 pinned posts, and our current post isn't one of them
         if len(pinned_posts) >= 2 and not any(p.id == current_post_id for p in pinned_posts):
@@ -348,15 +351,21 @@ async def get_reddit_info():
         is_mod = False
         mod_permissions = []
         
-        async for mod in subreddit.moderator():
-            if mod.name.lower() == REDDIT_USERNAME.lower():
-                is_mod = True
+        try:
+            moderators = await subreddit.moderator()
+            for mod in moderators:
+                if mod.name.lower() == REDDIT_USERNAME.lower():
+                    is_mod = True
                 # Get mod permissions if available
                 try:
                     mod_permissions = list(mod.mod_permissions) if hasattr(mod, 'mod_permissions') else []
                 except:
                     mod_permissions = []
                 break
+        except Exception as e:
+            logger.warning(f"Could not check moderator status: {e}")
+            is_mod = False
+            mod_permissions = []
         
         # Get available flairs
         available_flairs = []
@@ -417,12 +426,18 @@ async def test_pin_post(post_id):
         # Check if user is moderator
         is_mod = False
         mod_permissions = []
-        async for mod in subreddit.moderator():
-            if mod.name.lower() == REDDIT_USERNAME.lower():
-                is_mod = True
-                if hasattr(mod, 'mod_permissions'):
-                    mod_permissions = list(mod.mod_permissions)
-                break
+        try:
+            moderators = await subreddit.moderator()
+            for mod in moderators:
+                if mod.name.lower() == REDDIT_USERNAME.lower():
+                    is_mod = True
+                    if hasattr(mod, 'mod_permissions'):
+                        mod_permissions = list(mod.mod_permissions)
+                    break
+        except Exception as e:
+            logger.warning(f"Could not check moderator status: {e}")
+            is_mod = False
+            mod_permissions = []
                 
         # Try to pin
         pin_success = False
