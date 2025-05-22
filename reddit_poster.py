@@ -5,6 +5,9 @@ import json
 import traceback
 import asyncpraw
 
+# Ensure the logs directory exists before any logging
+os.makedirs('/app/logs', exist_ok=True)
+
 
 # Set up logging
 logging.basicConfig(
