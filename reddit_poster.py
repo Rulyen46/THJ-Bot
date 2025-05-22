@@ -284,6 +284,10 @@ async def post_changelog_to_reddit(entry, test_mode=False):
         
         # Create the post
         submission = await subreddit.submit(title, selftext=formatted_body)
+        
+        # IMPORTANT: Load the submission to access its attributes
+        await submission.load()
+        
         logger.info(f"Created new post for entry {entry['id']}: {submission.id} - {submission.title}")
         
         # Apply flair if possible
@@ -353,18 +357,19 @@ async def get_reddit_info():
         # Check moderator status
         is_mod = False
         mod_permissions = []
-        
+
         try:
+            # Fix: Await the moderator() call first
             moderators = await subreddit.moderator()
             for mod in moderators:
                 if mod.name.lower() == REDDIT_USERNAME.lower():
                     is_mod = True
-                # Get mod permissions if available
-                try:
-                    mod_permissions = list(mod.mod_permissions) if hasattr(mod, 'mod_permissions') else []
-                except:
-                    mod_permissions = []
-                break
+                    # Get mod permissions if available
+                    try:
+                        mod_permissions = list(mod.mod_permissions) if hasattr(mod, 'mod_permissions') else []
+                    except:
+                        mod_permissions = []
+                    break
         except Exception as e:
             logger.warning(f"Could not check moderator status: {e}")
             is_mod = False
@@ -412,7 +417,7 @@ async def get_reddit_info():
         except:
             pass
         return None
-
+    
 async def test_pin_post(post_id):
     """Test pinning a specific Reddit post."""
     reddit = await initialize_reddit()
@@ -430,6 +435,7 @@ async def test_pin_post(post_id):
         is_mod = False
         mod_permissions = []
         try:
+            # Fix: Await the moderator() call first
             moderators = await subreddit.moderator()
             for mod in moderators:
                 if mod.name.lower() == REDDIT_USERNAME.lower():
