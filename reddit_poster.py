@@ -5,6 +5,9 @@ from datetime import datetime
 import json
 import traceback
 
+# Ensure the logs directory exists before any logging
+os.makedirs('/app/logs', exist_ok=True)
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
