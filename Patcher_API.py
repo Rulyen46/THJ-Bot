@@ -20,7 +20,6 @@ import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 import importlib.util
-import traceback
 
 # Configure logging for Azure
 logging.basicConfig(
@@ -1072,7 +1071,6 @@ def import_reddit_poster():
         return reddit_module
     except Exception as e:
         logger.error(f"Error importing Reddit poster: {str(e)}")
-        logger.error(traceback.format_exc())
         return None
 
 
