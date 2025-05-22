@@ -174,7 +174,6 @@ async def on_message(message):
         try:
             await update_changelog_file(message)
             logger.info("Successfully updated changelog.md file")
-
             
             # Post to Reddit
             try:
@@ -187,10 +186,9 @@ async def on_message(message):
                         "timestamp": message.created_at.isoformat(),
                         "content": message.content
                     }
-
                     
-                    # Post to Reddit as a new post
-                    success, result_message = reddit_poster.post_changelog_to_reddit(entry)
+                    # Post to Reddit as a new post using async function
+                    success, result_message = await reddit_poster.post_changelog_to_reddit(entry)
                     if success:
                         logger.info(f"Successfully posted to Reddit: {result_message}")
                     else:
