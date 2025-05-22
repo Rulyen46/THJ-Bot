@@ -1,12 +1,9 @@
 import os
-import praw
+import asyncpraw
 import logging
 from datetime import datetime
 import json
 import traceback
-
-# Ensure the logs directory exists before any logging
-os.makedirs('/app/logs', exist_ok=True)
 
 # Set up logging
 logging.basicConfig(
@@ -31,21 +28,24 @@ REDDIT_FLAIR_NAME = os.getenv('REDDIT_FLAIR_NAME', 'Announcement')  # Default to
 # Path to store Reddit posts information
 REDDIT_POSTS_PATH = "/app/reddit_posts.json"
 
-def initialize_reddit():
-    """Initialize and return a Reddit API instance."""
+async def initialize_reddit():
+    """Initialize and return an async Reddit API instance."""
     if not all([REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USERNAME, REDDIT_PASSWORD, REDDIT_SUBREDDIT]):
         logger.error("Reddit credentials not fully configured!")
         return None
     
     try:
-        reddit = praw.Reddit(
+        reddit = asyncpraw.Reddit(
             client_id=REDDIT_CLIENT_ID,
             client_secret=REDDIT_CLIENT_SECRET,
             username=REDDIT_USERNAME,
             password=REDDIT_PASSWORD,
             user_agent=REDDIT_USER_AGENT
         )
-        logger.info(f"Successfully authenticated with Reddit as {REDDIT_USERNAME}")
+        
+        # Test the connection
+        user = await reddit.user.me()
+        logger.info(f"Successfully authenticated with Reddit as {user.name}")
         return reddit
     except Exception as e:
         logger.error(f"Error initializing Reddit API: {str(e)}")
@@ -125,7 +125,7 @@ def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
     
     return formatted_content
 
-def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_name=None):
+async def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_name=None):
     """Find and apply an appropriate flair to the post.
     
     Args:
@@ -139,7 +139,9 @@ def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_name=Non
     """
     try:
         # Get available flairs for the subreddit
-        available_flairs = list(subreddit.flair.link_templates)
+        available_flairs = []
+        async for flair in subreddit.flair.link_templates:
+            available_flairs.append(flair)
         
         if not available_flairs:
             logger.warning(f"No flairs found for r/{subreddit.display_name}")
@@ -184,7 +186,7 @@ def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_name=Non
                 return (False, selected_flair.get("text"))
                 
             # Apply the flair
-            submission.flair.select(flair_id)
+            await submission.flair.select(flair_id)
             logger.info(f"Applied flair '{selected_flair.get('text')}' to post {submission.id}")
             return (True, selected_flair.get("text"))
         else:
@@ -196,23 +198,34 @@ def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_name=Non
         logger.error(traceback.format_exc())
         return (False, None)
 
-def manage_pinned_posts(reddit, current_post_id):
+async def manage_pinned_posts(reddit, current_post_id):
     """Manage pinned posts in the subreddit.
     
     Reddit only allows 2 pinned posts per subreddit,
     so we need to unpin the oldest one if we're at the limit.
     """
     try:
-        subreddit = reddit.subreddit(REDDIT_SUBREDDIT)
+        subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
         # Get currently pinned posts (stickied)
-        pinned_posts = list(subreddit.sticky(limit=2))
+        pinned_posts = []
+        try:
+            sticky_1 = await subreddit.sticky(number=1)
+            pinned_posts.append(sticky_1)
+        except:
+            pass  # No first sticky
+            
+        try:
+            sticky_2 = await subreddit.sticky(number=2)
+            pinned_posts.append(sticky_2)
+        except:
+            pass  # No second sticky
         
         # If we already have 2 pinned posts, and our current post isn't one of them
         if len(pinned_posts) >= 2 and not any(p.id == current_post_id for p in pinned_posts):
             # Unpin the oldest one (index 1 is the older sticky)
             oldest_post = pinned_posts[1]
-            oldest_post.mod.sticky(state=False)
+            await oldest_post.mod.sticky(state=False)
             logger.info(f"Unpinned older post {oldest_post.id} to make room for new pinned post")
             
             # Update our records
@@ -224,7 +237,7 @@ def manage_pinned_posts(reddit, current_post_id):
         logger.error(traceback.format_exc())
         return False
 
-def post_changelog_to_reddit(entry, test_mode=False):
+async def post_changelog_to_reddit(entry, test_mode=False):
     """Post a single changelog entry to Reddit as a new pinned post with flair."""
     # Check if this entry has already been posted
     posts_data = get_posted_entries()
@@ -254,21 +267,21 @@ def post_changelog_to_reddit(entry, test_mode=False):
         return True, "Test successful - would post to Reddit (test mode enabled)"
     
     # Initialize Reddit API
-    reddit = initialize_reddit()
+    reddit = await initialize_reddit()
     if not reddit:
         logger.error("Failed to initialize Reddit API")
         return False, "Failed to initialize Reddit API"
     
     try:
         # Get the subreddit
-        subreddit = reddit.subreddit(REDDIT_SUBREDDIT)
+        subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
         # Create the post
-        submission = subreddit.submit(title, selftext=formatted_body)
+        submission = await subreddit.submit(title, selftext=formatted_body)
         logger.info(f"Created new post for entry {entry['id']}: {submission.id} - {submission.title}")
         
         # Apply flair if possible
-        flair_success, flair_name = find_and_apply_flair(
+        flair_success, flair_name = await find_and_apply_flair(
             reddit, 
             submission, 
             subreddit, 
@@ -276,12 +289,12 @@ def post_changelog_to_reddit(entry, test_mode=False):
         )
         
         # Manage pinned posts before pinning the new one
-        manage_pinned_posts(reddit, submission.id)
+        await manage_pinned_posts(reddit, submission.id)
         
         # Pin the post (if possible)
         pin_success = False
         try:
-            submission.mod.sticky()
+            await submission.mod.sticky()
             logger.info(f"Successfully pinned post {submission.id}")
             pin_success = True
         except Exception as e:
@@ -306,8 +319,141 @@ def post_changelog_to_reddit(entry, test_mode=False):
         status_text = " and ".join(status_parts)
         status_message = f" ({status_text})" if status_parts else ""
         
+        # Close the Reddit session
+        await reddit.close()
+        
         return True, f"Created new post{status_message}: {submission.url}"
     except Exception as e:
         logger.error(f"Error creating Reddit post: {str(e)}")
         logger.error(traceback.format_exc())
         return False, f"Error: {str(e)}"
+    finally:
+        # Ensure Reddit session is closed
+        try:
+            await reddit.close()
+        except:
+            pass
+
+# Async helper functions for testing
+async def get_reddit_info():
+    """Get basic Reddit information for testing."""
+    reddit = await initialize_reddit()
+    if not reddit:
+        return None
+    
+    try:
+        subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
+        
+        # Check moderator status
+        is_mod = False
+        mod_permissions = []
+        
+        async for mod in subreddit.moderator():
+            if mod.name.lower() == REDDIT_USERNAME.lower():
+                is_mod = True
+                # Get mod permissions if available
+                try:
+                    mod_permissions = list(mod.mod_permissions) if hasattr(mod, 'mod_permissions') else []
+                except:
+                    mod_permissions = []
+                break
+        
+        # Get available flairs
+        available_flairs = []
+        try:
+            async for flair in subreddit.flair.link_templates:
+                available_flairs.append({
+                    "flair_id": flair.get("id") or flair.get("flair_template_id"),
+                    "text": flair.get("text", "No text"),
+                    "css_class": flair.get("css_class"),
+                    "text_editable": flair.get("text_editable", False),
+                    "background_color": flair.get("background_color"),
+                    "text_color": flair.get("text_color")
+                })
+        except Exception as e:
+            logger.error(f"Error getting flairs: {str(e)}")
+        
+        preferred_flair = REDDIT_FLAIR_NAME
+        matching_flairs = [f for f in available_flairs if f.get("text", "").lower() == preferred_flair.lower()]
+        has_preferred_flair = len(matching_flairs) > 0
+        
+        result = {
+            "subreddit": f"r/{subreddit.display_name}",
+            "account": REDDIT_USERNAME,
+            "is_moderator": is_mod,
+            "mod_permissions": mod_permissions,
+            "can_manage_flair": "flair" in mod_permissions or "all" in mod_permissions if mod_permissions else False,
+            "available_flairs_count": len(available_flairs),
+            "available_flairs": available_flairs,
+            "preferred_flair": preferred_flair,
+            "has_preferred_flair": has_preferred_flair,
+            "recommended_action": "The flairs look good!" if has_preferred_flair else f"Add a flair named '{preferred_flair}' to your subreddit or update REDDIT_FLAIR_NAME environment variable"
+        }
+        
+        await reddit.close()
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error getting Reddit info: {str(e)}")
+        try:
+            await reddit.close()
+        except:
+            pass
+        return None
+
+async def test_pin_post(post_id):
+    """Test pinning a specific Reddit post."""
+    reddit = await initialize_reddit()
+    if not reddit:
+        return None
+    
+    try:
+        submission = await reddit.submission(id=post_id)
+        await submission.load()
+        
+        # Get the subreddit
+        subreddit = await reddit.subreddit(submission.subreddit.display_name)
+        
+        # Check if user is moderator
+        is_mod = False
+        mod_permissions = []
+        async for mod in subreddit.moderator():
+            if mod.name.lower() == REDDIT_USERNAME.lower():
+                is_mod = True
+                if hasattr(mod, 'mod_permissions'):
+                    mod_permissions = list(mod.mod_permissions)
+                break
+                
+        # Try to pin
+        pin_success = False
+        pin_error = None
+        if is_mod:
+            try:
+                await submission.mod.sticky()
+                pin_success = True
+            except Exception as e:
+                pin_error = str(e)
+                logger.error(f"Error pinning: {pin_error}")
+        
+        result = {
+            "post_id": post_id,
+            "post_title": submission.title,
+            "subreddit": f"r/{subreddit.display_name}",
+            "account": REDDIT_USERNAME,
+            "is_moderator": is_mod,
+            "mod_permissions": mod_permissions,
+            "pin_attempted": is_mod,
+            "pin_successful": pin_success,
+            "pin_error": pin_error
+        }
+        
+        await reddit.close()
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error accessing post: {str(e)}")
+        try:
+            await reddit.close()
+        except:
+            pass
+        return None
