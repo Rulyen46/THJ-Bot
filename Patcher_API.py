@@ -1077,9 +1077,10 @@ def import_reddit_poster():
 
 
 @app.post("/reddit/post-changelog", dependencies=[Depends(verify_token)])
-async def post_to_reddit(create_new: bool = False, title: Optional[str] = None):
+async def post_to_reddit(entry_id: Optional[str] = None):
     """
-    Post changelogs to Reddit.
+    Post a changelog entry to Reddit.
+    If no entry_id is provided, posts the latest entry.
     Requires X-Patcher-Token header for authentication.
     """
     try:
@@ -1091,55 +1092,24 @@ async def post_to_reddit(create_new: bool = False, title: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail="Failed to import Reddit poster module")
 
-        # Get changelogs using existing endpoint logic
-        changelogs = await get_changelog(all=True)
-
-        if not changelogs["total"]:
-            return {"status": "error", "message": "No changelogs found to post"}
-
-        # Post to Reddit
-        success, message = reddit_poster.post_changelog_to_reddit(
-            changelogs["changelogs"],
-            create_new,
-            title
-        )
-
-        if success:
-            return {"status": "success", "message": message}
+        # Get the entry to post
+        if entry_id:
+            # Get specific entry
+            changelogs = await get_changelog(all=True)
+            entry = next(
+                (e for e in changelogs["changelogs"] if e["id"] == entry_id), None)
+            if not entry:
+                raise HTTPException(
+                    status_code=404, detail=f"Changelog entry {entry_id} not found")
         else:
-            raise HTTPException(status_code=500, detail=message)
-    except Exception as e:
-        logger.error(f"Error posting to Reddit: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+            # Get latest entry
+            changelogs = await get_changelog(all=False)
+            if not changelogs["changelogs"]:
+                raise HTTPException(
+                    status_code=404, detail="No changelog entries found")
+            entry = changelogs["changelogs"][0]
 
-
-@app.post("/reddit/post-entry/{entry_id}", dependencies=[Depends(verify_token)])
-async def post_entry_to_reddit(entry_id: str):
-    """
-    Post a specific changelog entry to Reddit.
-    Requires X-Patcher-Token header for authentication.
-    """
-    try:
-        logger.info(f"\n=== Posting Entry {entry_id} to Reddit ===")
-
-        # Import the Reddit poster
-        reddit_poster = import_reddit_poster()
-        if not reddit_poster:
-            raise HTTPException(
-                status_code=500, detail="Failed to import Reddit poster module")
-
-        # Get the specific changelog entry
-        changelogs = await get_changelog(all=True)
-
-        # Find the entry with matching ID
-        entry = next(
-            (e for e in changelogs["changelogs"] if e["id"] == entry_id), None)
-
-        if not entry:
-            raise HTTPException(
-                status_code=404, detail=f"Changelog entry {entry_id} not found")
-
-        # Post to Reddit using async function
+        # Post to Reddit using async function with correct parameters
         success, message = await reddit_poster.post_changelog_to_reddit(entry)
 
         if success:
