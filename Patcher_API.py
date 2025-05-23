@@ -1077,14 +1077,21 @@ def import_reddit_poster():
 
 
 @app.post("/reddit/post-changelog", dependencies=[Depends(verify_token)])
-async def post_to_reddit(entry_id: Optional[str] = None):
+async def post_to_reddit(entry_id: Optional[str] = None, force: bool = False):
     """
-    Post a changelog entry to Reddit.
+    Post a changelog entry to Reddit with duplicate checking.
     If no entry_id is provided, posts the latest entry.
+    
+    Parameters:
+    - entry_id: Specific entry ID to post (optional)
+    - force: If True, bypasses duplicate checking (optional)
+    
     Requires X-Patcher-Token header for authentication.
     """
     try:
         logger.info("\n=== Posting to Reddit ===")
+        logger.info(f"Entry ID: {entry_id if entry_id else 'Latest'}")
+        logger.info(f"Force mode: {force}")
 
         # Import the Reddit poster
         reddit_poster = import_reddit_poster()
@@ -1109,17 +1116,70 @@ async def post_to_reddit(entry_id: Optional[str] = None):
                     status_code=404, detail="No changelog entries found")
             entry = changelogs["changelogs"][0]
 
-        # Post to Reddit using async function with correct parameters
-        success, message = await reddit_poster.post_changelog_to_reddit(entry)
+        logger.info(f"Processing entry: {entry['id']} by {entry['author']}")
+
+        # Check for duplicates at API level (unless force is True)
+        if not force:
+            posted_entries = reddit_poster.get_posted_entries()
+            existing_post = None
+            
+            for post in posted_entries.get("posts", []):
+                if post["entry_id"] == entry["id"]:
+                    existing_post = post
+                    break
+            
+            if existing_post:
+                logger.info(f"Entry {entry['id']} already posted to Reddit")
+                return {
+                    "status": "duplicate",
+                    "message": f"Entry {entry['id']} has already been posted to Reddit",
+                    "existing_post": {
+                        "post_id": existing_post["post_id"],
+                        "url": existing_post["url"],
+                        "posted_at": existing_post["posted_at"],
+                        "flair": existing_post.get("flair", "None")
+                    },
+                    "entry_id": entry["id"]
+                }
+
+        # Post to Reddit using async function with force parameter
+        success, message = await reddit_poster.post_changelog_to_reddit(entry, force=force)
 
         if success:
-            return {"status": "success", "message": message}
+            # Get the updated post info to return
+            posted_entries = reddit_poster.get_posted_entries()
+            latest_post = None
+            for post in posted_entries.get("posts", []):
+                if post["entry_id"] == entry["id"]:
+                    latest_post = post
+                    break
+            
+            response = {
+                "status": "success", 
+                "message": message,
+                "entry_id": entry["id"]
+            }
+            
+            if latest_post:
+                response["post_details"] = {
+                    "post_id": latest_post["post_id"],
+                    "url": latest_post["url"],
+                    "posted_at": latest_post["posted_at"],
+                    "flair": latest_post.get("flair", "None")
+                }
+            
+            return response
         else:
             raise HTTPException(status_code=500, detail=message)
+            
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         logger.error(f"Error posting to Reddit: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.post("/reddit/post-all-entries", dependencies=[Depends(verify_token)])
 async def post_all_entries_to_reddit():
     """
@@ -1173,6 +1233,62 @@ async def post_all_entries_to_reddit():
         }
     except Exception as e:
         logger.error(f"Error posting to Reddit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def check_recent_reddit_posts(entry_id):
+    """
+    Check if a changelog entry has already been posted to Reddit by scanning recent posts.
+    This is a backup check in case our local tracking gets out of sync.
+    
+    Returns True if duplicate found, False otherwise.
+    """
+    try:
+        reddit = await initialize_reddit()
+        if not reddit:
+            logger.warning("Could not initialize Reddit for duplicate checking")
+            return False
+        
+        subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
+        
+        # Check the last 25 posts for duplicates
+        post_count = 0
+        async for submission in subreddit.new(limit=25):
+            post_count += 1
+            # Check if the post body contains our entry ID
+            if hasattr(submission, 'selftext') and f"Entry ID:** {entry_id}" in submission.selftext:
+                logger.warning(f"Found duplicate post for entry {entry_id}: {submission.url}")
+                await reddit.close()
+                return True
+        
+        logger.info(f"Checked {post_count} recent posts, no duplicates found for entry {entry_id}")
+        await reddit.close()
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error checking for duplicate posts: {str(e)}")
+        # Don't block posting if duplicate check fails
+        return False
+    
+@app.get("/reddit/posted-entries", dependencies=[Depends(verify_token)])
+async def get_posted_entries():
+    """
+    Get list of all entries that have been posted to Reddit.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(status_code=500, detail="Failed to import Reddit poster module")
+        
+        posted_entries = reddit_poster.get_posted_entries()
+        
+        return {
+            "status": "success",
+            "total_posted": len(posted_entries.get("posts", [])),
+            "posts": posted_entries.get("posts", [])
+        }
+    except Exception as e:
+        logger.error(f"Error getting posted entries: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/reddit/test", dependencies=[Depends(verify_token)])

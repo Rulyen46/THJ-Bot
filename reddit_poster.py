@@ -67,7 +67,7 @@ def get_posted_entries():
         logger.error(f"Error reading Reddit posts: {str(e)}")
         return {"posts": []}
 
-def save_post_info(entry_id, post_id, title, url, flair_applied=None):
+def save_post_info(entry_id, post_id, title, url, flair_applied=None, force_used=False):
     """Save information about a posted changelog entry."""
     posts_data = get_posted_entries()
     
@@ -79,8 +79,12 @@ def save_post_info(entry_id, post_id, title, url, flair_applied=None):
         "url": url,
         "flair": flair_applied,
         "posted_at": datetime.now().isoformat(),
-        "pinned": True
+        "pinned": True,
+        "force_used": force_used
     })
+    
+    # Sort posts by posted_at to maintain chronological order
+    posts_data["posts"].sort(key=lambda x: x["posted_at"], reverse=True)
     
     try:
         with open(REDDIT_POSTS_PATH, 'w') as f:
@@ -128,6 +132,40 @@ def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
     formatted_content += "*This post was automatically generated from the official changelog.*"
     
     return formatted_content
+
+async def check_recent_reddit_posts(entry_id):
+    """
+    Check if a changelog entry has already been posted to Reddit by scanning recent posts.
+    This is a backup check in case our local tracking gets out of sync.
+    
+    Returns True if duplicate found, False otherwise.
+    """
+    try:
+        reddit = await initialize_reddit()
+        if not reddit:
+            logger.warning("Could not initialize Reddit for duplicate checking")
+            return False
+        
+        subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
+        
+        # Check the last 25 posts for duplicates
+        post_count = 0
+        async for submission in subreddit.new(limit=25):
+            post_count += 1
+            # Check if the post body contains our entry ID
+            if hasattr(submission, 'selftext') and f"Entry ID:** {entry_id}" in submission.selftext:
+                logger.warning(f"Found duplicate post for entry {entry_id}: {submission.url}")
+                await reddit.close()
+                return True
+        
+        logger.info(f"Checked {post_count} recent posts, no duplicates found for entry {entry_id}")
+        await reddit.close()
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error checking for duplicate posts: {str(e)}")
+        # Don't block posting if duplicate check fails
+        return False
 
 async def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_name=None):
     """Find and apply an appropriate flair to the post.
@@ -243,15 +281,34 @@ async def manage_pinned_posts(reddit, current_post_id):
         logger.error(traceback.format_exc())
         return False
 
-async def post_changelog_to_reddit(entry, test_mode=False):
-    """Post a single changelog entry to Reddit as a new pinned post with flair."""
-    # Check if this entry has already been posted
-    posts_data = get_posted_entries()
-    for post in posts_data["posts"]:
-        if post["entry_id"] == entry["id"]:
-            logger.info(f"Entry {entry['id']} already posted to Reddit as {post['post_id']}")
-            return True, f"Already posted: {post['url']}"
+async def post_changelog_to_reddit(entry, test_mode=False, force=False):
+    """
+    Post a single changelog entry to Reddit as a new pinned post with flair.
     
+    Parameters:
+    - entry: The changelog entry to post
+    - test_mode: If True, simulates posting without making actual Reddit API calls
+    - force: If True, bypasses duplicate checking and posts anyway
+    
+    Returns:
+    - (success, message): Tuple of success boolean and result message
+    """
+    
+    # Check if this entry has already been posted (unless force is True)
+    if not force:
+        posts_data = get_posted_entries()
+        for post in posts_data["posts"]:
+            if post["entry_id"] == entry["id"]:
+                logger.info(f"Entry {entry['id']} already posted to Reddit as {post['post_id']}")
+                return True, f"Already posted: {post['url']} (use force=True to override)"
+
+    # Additional duplicate check by scanning recent Reddit posts
+    if not force and not test_mode:
+        duplicate_found = await check_recent_reddit_posts(entry["id"])
+        if duplicate_found:
+            logger.warning(f"Found duplicate post for entry {entry['id']} on Reddit but not in local tracking")
+            return False, f"Duplicate post detected on Reddit for entry {entry['id']} (use force=True to override)"
+
     # Format the entry for logging/testing
     formatted_body = format_changelog_for_reddit(
         entry["content"],
@@ -310,13 +367,14 @@ async def post_changelog_to_reddit(entry, test_mode=False):
         except Exception as e:
             logger.warning(f"Could not pin post {submission.id}: {str(e)}")
         
-        # Save post info
+        # Save post info with enhanced tracking
         save_post_info(
             entry["id"],
             submission.id,
             submission.title,
             submission.url,
-            flair_name
+            flair_name,
+            force_used=force
         )
         
         # Generate success message
@@ -325,6 +383,8 @@ async def post_changelog_to_reddit(entry, test_mode=False):
             status_parts.append(f"flaired as '{flair_name}'")
         if pin_success:
             status_parts.append("pinned")
+        if force:
+            status_parts.append("forced override")
             
         status_text = " and ".join(status_parts)
         status_message = f" ({status_text})" if status_parts else ""
