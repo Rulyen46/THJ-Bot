@@ -27,7 +27,6 @@ services:
       - REDDIT_FLAIR_NAME=${REDDIT_FLAIR_NAME:-}
     volumes:
       - ./logs:/app/logs
-      - .:/app
     networks:
       - changelog-network
     command: ['python', 'Patcher_API.py']
@@ -43,11 +42,10 @@ services:
       - CHANGELOG_CHANNEL_ID=${CHANGELOG_CHANNEL_ID}
     volumes:
       - ./logs:/app/logs
-      - .:/app
     networks:
       - changelog-network
     command: ['python', 'Discord.py']
-    
+
   reddit-poster:
     build: .
     container_name: reddit-poster
@@ -59,10 +57,9 @@ services:
       - CHANGELOG_CHANNEL_ID=${CHANGELOG_CHANNEL_ID}
     volumes:
       - ./logs:/app/logs
-      - .:/app
     networks:
       - changelog-network
-    command: [python', 'reddit_poster.py']
+    command: ['python', 'reddit_poster.py']
 
 networks:
   changelog-network:
