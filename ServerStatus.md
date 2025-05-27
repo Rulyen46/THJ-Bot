@@ -3,6 +3,6 @@
 ## EXP Boost Status
 
 **Channel ID:** 1319011465960882197
-**Channel Name:** Bonus XP: Off
-**Last Updated:** 2025-04-15 13:58:07
-**Status:** Bonus XP: Off
+**Channel Name:** Bonus XP: 50%
+**Last Updated:** 2025-05-25 02:35:20
+**Status:** Bonus XP: 50%
