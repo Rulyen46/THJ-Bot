@@ -19,6 +19,7 @@ import traceback
 from datetime import datetime
 import threading
 import signal
+import aiohttp  # For API health checks
 
 # Configure logging
 logging.basicConfig(
@@ -31,11 +32,11 @@ logging.basicConfig(
 logger = logging.getLogger("azure_heartbeat")
 
 # Constants
-DEFAULT_HEARTBEAT_INTERVAL = 180  # Default heartbeat interval in seconds (3 minutes)
-INITIAL_INTERVAL = 45  # Initial more frequent heartbeats (45 seconds)
+DEFAULT_HEARTBEAT_INTERVAL = 90  # Default heartbeat interval in seconds (1.5 minutes)
+INITIAL_INTERVAL = 30  # Initial more frequent heartbeats (30 seconds)
 NUM_INITIAL_BEATS = 5  # Number of initial more frequent heartbeats
 HEARTBEAT_LOGFILE = "/app/logs/azure_heartbeat.log"
-# Offset the Azure heartbeat from the Discord heartbeat to avoid overlapping logs
+# More frequent logging to ensure visibility in Azure
 
 # Ensure logs directory exists
 os.makedirs(os.path.dirname(HEARTBEAT_LOGFILE), exist_ok=True)
@@ -52,18 +53,23 @@ def force_azure_heartbeat_log(message):
     separator = "="*50
     formatted_message = f"\n{separator}\n❤️ AZURE HEARTBEAT ({timestamp})\n{message}\n{separator}\n"
     
-    # Track recent heartbeats to prevent excessive duplicate logging
+    # Always do the standard logging first (never throttled)
+    logger.info(f"HEARTBEAT: {message}")
+    
+    # ALWAYS print to stdout and stderr for Azure visibility (no throttling for Azure)
+    # Azure App Service sometimes has issues with buffered output
+    print(formatted_message, flush=True)
+    print(formatted_message, file=sys.stderr, flush=True)
+    
+    # For non-essential logging (file writes), we can throttle
     current_time = int(time.time())
     message_hash = hash(message[:20])  # Use first 20 chars to identify similar messages
     
-    # Method 1: Standard logging (keep it simple for structured logging) - always do this one
-    logger.info(f"HEARTBEAT: {message}")
-    
-    # Only do the more verbose logging once per message type per minute
+    # Throttle file-based logging to prevent excessive I/O
     if not hasattr(force_azure_heartbeat_log, 'recent_logs'):
         force_azure_heartbeat_log.recent_logs = {}
     
-    # Check if we've recently logged this same message
+    # Check if we've recently written this same message to file
     recently_logged = False
     if message_hash in force_azure_heartbeat_log.recent_logs:
         last_time = force_azure_heartbeat_log.recent_logs[message_hash]
@@ -73,14 +79,8 @@ def force_azure_heartbeat_log(message):
     # Update the timestamp for this message hash
     force_azure_heartbeat_log.recent_logs[message_hash] = current_time
     
-    # Only proceed with the verbose logging if not recently logged
+    # Only write to file if not recently logged (throttle file I/O)
     if not recently_logged:
-        # Method 2: Direct stdout write with flush - use the formatted version
-        print(formatted_message, flush=True)
-        
-        # Method 3: Direct stderr write with flush (Azure sometimes prioritizes stderr)
-        print(formatted_message, file=sys.stderr, flush=True)
-        
         # Method 4: Write to dedicated heartbeat logfile - standard format for easy parsing
         try:
             with open(HEARTBEAT_LOGFILE, "a") as f:
@@ -93,6 +93,28 @@ async def dedicated_heartbeat_logger():
     """Log heartbeats at regular intervals"""
     startup_msg = "Starting dedicated Azure heartbeat logger"
     force_azure_heartbeat_log(startup_msg)
+    
+    # Check for other services and log their status
+    force_azure_heartbeat_log("Checking companion services...")
+    
+    # Check if FastAPI process is running
+    try:
+        api_health_status = "Unknown"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get('http://localhost/health', timeout=2) as resp:
+                    if resp.status == 200:
+                        api_health_status = "Healthy"
+                        api_data = await resp.json()
+                        force_azure_heartbeat_log(f"FastAPI service is running: {api_data}")
+                    else:
+                        api_health_status = f"Unhealthy (Status: {resp.status})"
+        except Exception as e:
+            api_health_status = f"Not responding ({str(e)})"
+        
+        force_azure_heartbeat_log(f"API Status: {api_health_status}")
+    except Exception as e:
+        force_azure_heartbeat_log(f"Error checking API: {str(e)}")
     
     # More frequent initial heartbeats to ensure Azure sees them quickly
     for i in range(NUM_INITIAL_BEATS):
@@ -116,6 +138,22 @@ async def dedicated_heartbeat_logger():
             now = datetime.now()
             uptime_seconds = int(time.time() - start_time)
             uptime_str = f"{uptime_seconds // 3600}h {(uptime_seconds % 3600) // 60}m {uptime_seconds % 60}s"
+            
+            # Check API every 5th heartbeat
+            if count % 5 == 0:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        try:
+                            async with session.get('http://localhost/health', timeout=2) as resp:
+                                if resp.status == 200:
+                                    data = await resp.json()
+                                    force_azure_heartbeat_log(f"API health check: Healthy - {data}")
+                                else:
+                                    force_azure_heartbeat_log(f"API health check: Unhealthy - Status {resp.status}")
+                        except Exception as e:
+                            force_azure_heartbeat_log(f"API health check failed: {str(e)}")
+                except Exception as e:
+                    force_azure_heartbeat_log(f"Could not perform API check: {str(e)}")
             
             # Build multi-line status message
             status_lines = [

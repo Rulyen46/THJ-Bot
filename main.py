@@ -117,6 +117,46 @@ async def start_dedicated_heartbeat():
         sys.stdout.flush()
         return False
 
+async def start_forced_logging():
+    """Start the Azure forced logging utility to ensure logs appear in Azure"""
+    logger.info("Starting Azure forced logging utility...")
+    print("AZURE_STARTUP: Starting Azure forced logging utility for maximum log visibility")
+    sys.stdout.flush()
+    
+    try:
+        # Check if the script exists
+        if os.path.exists('force_azure_logging.py'):
+            # Import and run directly or start as subprocess
+            try:
+                # Start as a subprocess to ensure independence
+                import subprocess
+                process = subprocess.Popen(
+                    ['python', 'force_azure_logging.py'],
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True
+                )
+                
+                logger.info(f"Started Azure logging utility process with PID: {process.pid}")
+                print(f"AZURE_STARTUP: Started Azure logging utility with PID: {process.pid}")
+                sys.stdout.flush()
+                
+                return True
+            except Exception as e:
+                logger.error(f"Error starting Azure logging utility: {e}")
+                print(f"AZURE_STARTUP ERROR: Failed to start Azure logging utility: {e}")
+                sys.stdout.flush()
+                return False
+        else:
+            logger.warning("Azure logging utility script not found")
+            print("AZURE_STARTUP WARNING: force_azure_logging.py not found!")
+            return False
+    except Exception as e:
+        logger.error(f"Error starting Azure logging utility: {e}")
+        print(f"AZURE_STARTUP ERROR: Failed to start Azure logging utility: {e}")
+        sys.stdout.flush()
+        return False
+
 async def main():
     """Main entry point to run both services concurrently"""
     logger.info("Starting services...")
@@ -131,6 +171,16 @@ async def main():
         print("AZURE_STARTUP: Dedicated heartbeat logger is running")
     else:
         print("AZURE_STARTUP: Dedicated heartbeat logger failed to start - using only internal heartbeats")
+    sys.stdout.flush()
+    
+    # Start the Azure forced logging utility
+    logging_started = await start_forced_logging()
+    
+    # Print Azure logging utility info whether it started or not
+    if logging_started:
+        print("AZURE_STARTUP: Azure logging utility is running")
+    else:
+        print("AZURE_STARTUP: Azure logging utility failed to start")
     sys.stdout.flush()
     
     # Run both the Discord bot and Patcher API as separate services

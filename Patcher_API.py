@@ -179,8 +179,11 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
 
         # Log the request start
         request_id = f"{int(time.time() * 1000)}-{os.urandom(4).hex()}"
-        logger.info(
-            f"API Request #{request_id} | {request.method} {request.url.path} | From: {client_ip} | Auth: {auth_status}")
+        request_log = f"API Request #{request_id} | {request.method} {request.url.path} | From: {client_ip} | Auth: {auth_status}"
+        
+        # Use both logging methods for maximum visibility
+        logger.info(request_log)
+        print(request_log, file=sys.stderr, flush=True)
 
         # Process the request and measure time
         start_time = time.time()
@@ -189,19 +192,31 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
             process_time = time.time() - start_time
 
             # Log successful response
-            logger.info(
+            response_log = (
                 f"API Response #{request_id} | {request.method} {request.url.path} | "
                 f"Status: {response.status_code} | Time: {process_time:.3f}s | Size: {response.headers.get('content-length', 'unknown')}"
             )
+            
+            # Use multiple logging methods to ensure visibility in Azure
+            logger.info(response_log)
+            # Also print directly to stderr for maximum visibility in Azure logs
+            print(response_log, file=sys.stderr, flush=True)
 
             return response
         except Exception as e:
             # Log exceptions
             process_time = time.time() - start_time
-            logger.error(
+            error_log = (
                 f"API Error #{request_id} | {request.method} {request.url.path} | "
                 f"Error: {str(e)} | Time: {process_time:.3f}s"
             )
+            
+            # Use both logging methods for visibility
+            logger.error(error_log)
+            print(f"\n❌ {error_log}\n", file=sys.stderr, flush=True)
+            # Log the traceback as well for better debugging
+            logger.error(traceback.format_exc())
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
             raise
 
 
@@ -1027,6 +1042,10 @@ async def start_discord():
 async def start_api():
     """Start the FastAPI server"""
     try:
+        # Global startup time for uptime tracking
+        global startup_time
+        startup_time = time.time()
+        
         # Log configuration clearly for debugging
         logger.info("\n=== FastAPI Server Configuration ===")
         logger.info(f"Host: 0.0.0.0")
@@ -1038,7 +1057,29 @@ async def start_api():
         @app.get("/health")
         async def health_check():
             """Health check endpoint for Azure"""
-            return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+            now = datetime.now()
+            
+            # Log the health check with our enhanced logging
+            force_azure_log(f"Health check request received at {now.isoformat()}")
+            
+            # Collect additional health data
+            health_data = {
+                "status": "healthy",
+                "timestamp": now.isoformat(),
+                "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "discord_connected": client.is_ready() if hasattr(client, "is_ready") else False,
+                "api_version": "1.0.1",
+                "uptime": time.time() - startup_time if 'startup_time' in globals() else 0
+            }
+            
+            # Add API endpoint metrics
+            if hasattr(app, "routes"):
+                health_data["endpoints"] = len(app.routes)
+                
+            # Force log the response too
+            force_azure_log(f"Health check response: {json.dumps(health_data)}")
+            
+            return health_data
 
         # Configure Uvicorn with proper settings for Azure
         config = uvicorn.Config(
@@ -1502,7 +1543,36 @@ async def detailed_heartbeat():
         logger.error(traceback.format_exc())
         return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
 
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_discord())
-    loop.run_until_complete(start_api())
+# Add a special function to ensure logs are visible in Azure
+def force_azure_log(message, level="info", include_timestamp=True):
+    """Force log to multiple outputs to ensure visibility in Azure"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if include_timestamp else ""
+    
+    # Use standard logger first
+    if level.lower() == "info":
+        logger.info(message)
+    elif level.lower() == "warning":
+        logger.warning(message)
+    elif level.lower() == "error":
+        logger.error(message)
+    elif level.lower() == "critical":
+        logger.critical(message)
+    else:
+        logger.info(message)
+    
+    # Then force output to stderr for Azure visibility
+    if timestamp:
+        output = f"{timestamp} [{level.upper()}]: {message}"
+    else:
+        output = message
+        
+    # Print directly to both stdout and stderr with flush
+    print(output, flush=True)
+    print(output, file=sys.stderr, flush=True)
+    
+    # For important events, make them visually distinct
+    if level.lower() in ["warning", "error", "critical"]:
+        visual_marker = "❌" if level.lower() in ["error", "critical"] else "⚠️"
+        separator = "-" * 80
+        distinctive_output = f"\n{separator}\n{visual_marker} {output}\n{separator}\n"
+        print(distinctive_output, file=sys.stderr, flush=True)
