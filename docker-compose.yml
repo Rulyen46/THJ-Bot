@@ -13,6 +13,9 @@ services:
       - CHANGELOG_CHANNEL_ID=${CHANGELOG_CHANNEL_ID}
       - PATCHER_TOKEN=${PATCHER_TOKEN}
       - API_BASE_URL=http://patcher-api:80
+      # Heartbeat configuration
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-300}
+      - PYTHONUNBUFFERED=1
       # Optional Wiki variables
       - WIKI_API_URL=${WIKI_API_URL:-}
       - WIKI_API_KEY=${WIKI_API_KEY:-}
@@ -40,6 +43,8 @@ services:
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - CHANGELOG_CHANNEL_ID=${CHANGELOG_CHANNEL_ID}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-300}
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./logs:/app/logs
     networks:

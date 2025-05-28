@@ -35,9 +35,16 @@ else\n\
 fi\n\
 ' > /app/startup.sh && chmod +x /app/startup.sh
 
+# Create logs directory
+RUN mkdir -p /app/logs && chmod 777 /app/logs
+
+# Ensure heartbeat script is executable
+RUN chmod +x /app/azure_heartbeat.py
+
 # Set environment variables
 ENV PORT=80
 ENV PYTHONUNBUFFERED=1
+ENV HEARTBEAT_INTERVAL=300
 
 # Use ENTRYPOINT for more reliable execution
 ENTRYPOINT ["/app/startup.sh"]

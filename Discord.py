@@ -1,4 +1,5 @@
 import os
+:import sys
 import discord
 from dotenv import load_dotenv
 import logging
@@ -77,19 +78,82 @@ async def sync_changelog_on_startup():
         logger.error(f"Error syncing changelog on startup: {str(e)}")
         logger.error(traceback.format_exc())
 
+def force_azure_heartbeat_log(message):
+    """Write a heartbeat log in multiple ways to ensure it gets picked up in Azure"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Create a visually distinct heartbeat message with separators
+    separator = "="*50
+    formatted_message = f"\n{separator}\n💓 HEARTBEAT ({timestamp})\n{message}\n{separator}\n"
+    heartbeat_msg = f"{timestamp} [DISCORD_HEARTBEAT] {message}"
+    
+    # Method 1: Standard logging (keep it simple for structured logging)
+    logger.info(f"HEARTBEAT: {message}")
+    
+    # Method 2: Direct stdout write with flush - use the formatted version
+    print(formatted_message, flush=True)
+    
+    # Method 3: Direct stderr write with flush (Azure sometimes prioritizes stderr)
+    print(formatted_message, file=sys.stderr, flush=True)
+    
+    # Method 4: Write to dedicated heartbeat logfile - standard format for easy parsing
+    try:
+        os.makedirs('/app/logs', exist_ok=True)
+        with open("/app/logs/discord_heartbeat.log", "a") as f:
+            f.write(heartbeat_msg + "\n")
+    except Exception as e:
+        print(f"Error writing to heartbeat logfile: {e}", file=sys.stderr, flush=True)
+
 async def health_check():
     """Periodically check connection health and log status"""
     await client.wait_until_ready()
+    
+    # Gradual startup - start with more frequent checks that get less frequent over time
+    initial_checks = 5
+    initial_interval = 30  # 30 seconds
+    current_interval = initial_interval
+    max_interval = HEALTH_CHECK_INTERVAL  # Final stable interval
+    
+    check_count = 0
+    
     while not client.is_closed():
+        check_count += 1
         try:
-            logger.info("Health check - Bot is still connected, latency: {:.2f}ms".format(client.latency * 1000))
+            # Calculate latency in milliseconds
+            latency_ms = client.latency * 1000
+            
+            # Build a more detailed heartbeat message with multiple lines of information
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            heartbeat_lines = [
+                f"Discord health check #{check_count}",
+                f"Time: {current_time}",
+                f"Bot: {client.user.name} (ID: {client.user.id})",
+                f"Connection: Active, latency: {latency_ms:.2f}ms",
+                f"Interval: {current_interval}s"
+            ]
+            
+            # Add info about channels being monitored
+            changelog_channel = client.get_channel(CHANGELOG_CHANNEL_ID)
+            if changelog_channel:
+                heartbeat_lines.append(f"Monitoring changelog channel: #{changelog_channel.name}")
+            
+            if EXP_BOOST_CHANNEL_ID:
+                exp_channel = client.get_channel(EXP_BOOST_CHANNEL_ID)
+                if exp_channel:
+                    heartbeat_lines.append(f"Monitoring EXP boost channel: #{exp_channel.name}")
+            
+            # Join everything into a multi-line message for the heartbeat log
+            heartbeat_message = "\n".join(heartbeat_lines)
+            
+            # Use special Azure heartbeat logging for better visibility
+            force_azure_heartbeat_log(heartbeat_message)
             
             # Ping Discord's API to keep connection active
             async with aiohttp.ClientSession() as session:
                 async with session.get('https://discord.com/api/v10/gateway') as resp:
-                    if resp.status == 200:
-                        logger.info("Discord API gateway connection is healthy")
-                    else:
+                    gateway_status = "HEALTHY" if resp.status == 200 else f"WARNING ({resp.status})"
+                    logger.info(f"Discord API gateway connection: {gateway_status}")
+                    if resp.status != 200:
                         logger.warning(f"Discord API gateway returned status code: {resp.status}")
             
             # Update bot status to show it's active
@@ -111,11 +175,41 @@ async def health_check():
             logger.error(f"Error during health check: {str(e)}")
             logger.error(traceback.format_exc())
         
-        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+        # Calculate the interval for the next check
+        # Gradually increase from initial_interval to max_interval
+        if check_count < initial_checks:
+            # Keep initial interval for the first few checks
+            interval = initial_interval
+        else:
+            # Gradually increase interval
+            progress = min(1.0, (check_count - initial_checks) / 10)  # Transition over 10 checks
+            interval = int(initial_interval + progress * (max_interval - initial_interval))
+            
+            # Once we reach maximum interval, stay there
+            if interval >= max_interval:
+                interval = max_interval
+                # Log that we've reached stable interval
+                if current_interval != max_interval:
+                    logger.info(f"Health check interval has reached stable value of {max_interval} seconds")
+        
+        # If interval changed, log it
+        if interval != current_interval:
+            logger.info(f"Health check interval adjusted from {current_interval} to {interval} seconds")
+            current_interval = interval
+        
+        await asyncio.sleep(interval)
 
 @client.event
 async def on_ready():
     logger.info(f'Bot is ready and connected to Discord! Connected as {client.user.name} (ID: {client.user.id})')
+    
+    # Start the health check task
+    client.loop.create_task(health_check())
+    logger.info("Health check task started")
+    
+    # Force an immediate heartbeat log for Azure visibility
+    force_azure_heartbeat_log(f"Discord bot ready - connected as {client.user.name}")
+    
     await sync_changelog_on_startup()
     
     # Check for and update EXP boost status on startup

@@ -7,3 +7,4 @@ python-multipart==0.0.9
 requests
 markdown
 asyncpraw
+psutil==5.9.5

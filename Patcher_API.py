@@ -1142,7 +1142,7 @@ async def post_to_reddit(entry_id: Optional[str] = None, force: bool = False):
                     "entry_id": entry["id"]
                 }
 
-        # Post to Reddit using async function with force parameter
+        # Post to Reddit using async function
         success, message = await reddit_poster.post_changelog_to_reddit(entry, force=force)
 
         if success:
@@ -1243,6 +1243,17 @@ async def check_recent_reddit_posts(entry_id):
     Returns True if duplicate found, False otherwise.
     """
     try:
+        # Import the Reddit poster to access functions and variables
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            logger.warning("Could not import Reddit poster for duplicate checking")
+            return False
+            
+        # Access the functions and constants from the reddit_poster module
+        initialize_reddit = reddit_poster.initialize_reddit
+        REDDIT_SUBREDDIT = reddit_poster.REDDIT_SUBREDDIT
+        
+        # Initialize Reddit API
         reddit = await initialize_reddit()
         if not reddit:
             logger.warning("Could not initialize Reddit for duplicate checking")
@@ -1396,6 +1407,100 @@ async def test_reddit_flair():
     except Exception as e:
         logger.error(f"Error in test_reddit_flair: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/heartbeat")
+async def heartbeat():
+    """
+    Simple heartbeat endpoint for healthchecks.
+    Does not require authentication.
+    """
+    try:
+        # Log this heartbeat to ensure it's visible in Azure logs
+        timestamp = datetime.now().isoformat()
+        heartbeat_msg = f"External heartbeat check received at {timestamp}"
+        logger.info(heartbeat_msg)
+        # Also log to stderr for visibility in Azure
+        print(heartbeat_msg, file=sys.stderr, flush=True)
+        
+        return {
+            "status": "alive", 
+            "timestamp": timestamp, 
+            "service": "Patcher API", 
+            "version": "1.0"
+        }
+    except Exception as e:
+        logger.error(f"Error in heartbeat endpoint: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/heartbeat/detail", dependencies=[Depends(verify_token)])
+async def detailed_heartbeat():
+    """
+    Detailed heartbeat check - authenticated.
+    Requires X-Patcher-Token header for authentication.
+    Returns detailed system status.
+    """
+    try:
+        logger.info("\n=== DETAILED HEARTBEAT CHECK ===")
+        
+        # Basic system stats without requiring psutil
+        system_stats = {
+            "timestamp": datetime.now().isoformat(),
+            "process_id": os.getpid(),
+            "python_version": sys.version
+        }
+        
+        # Get log files if they exist
+        log_files = []
+        try:
+            log_dir = "/app/logs"
+            if os.path.exists(log_dir):
+                log_files = [f for f in os.listdir(log_dir) if f.endswith('.log')]
+                log_files = [{"name": f, "size": os.path.getsize(os.path.join(log_dir, f))} for f in log_files]
+        except Exception as e:
+            logger.error(f"Error reading log files: {str(e)}")
+        
+        # Last heartbeats (placeholder)
+        last_heartbeats = {
+            "discord": datetime.now().isoformat(),
+            "api": datetime.now().isoformat()
+        }
+
+        # Reddit status info
+        reddit_info = {"status": "unknown"}
+        try:
+            # Import the Reddit poster
+            reddit_poster = import_reddit_poster()
+            if reddit_poster:
+                # Get Reddit info using async function if available
+                if hasattr(reddit_poster, "get_reddit_info"):
+                    result = await reddit_poster.get_reddit_info()
+                    if result:
+                        reddit_info = result
+        except Exception as e:
+            reddit_info = {"status": "error", "message": str(e)}
+            logger.error(f"Error getting Reddit info: {str(e)}")
+        
+        return {
+            "status": "alive",
+            "timestamp": datetime.now().isoformat(),
+            "system": system_stats,
+            "environment": {
+                "python_version": sys.version,
+                "working_directory": os.getcwd(),
+                "log_files": log_files
+            },
+            "last_heartbeats": last_heartbeats,
+            "reddit_info": reddit_info
+        }
+    except Exception as e:
+        logger.error(f"Error in detailed_heartbeat: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": str(e)}
+    except Exception as e:
+        logger.error(f"Error in detailed heartbeat: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()

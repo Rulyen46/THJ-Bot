@@ -3,6 +3,8 @@ import os
 import logging
 import importlib.util
 import sys
+import time
+from datetime import datetime
 
 # Set up logging
 logging.basicConfig(
@@ -66,17 +68,87 @@ async def run_api_server():
         logger.error(f"Failed to start Patcher API: {e}")
         raise
 
+async def start_dedicated_heartbeat():
+    """Start the dedicated Azure heartbeat logger as a separate process"""
+    logger.info("Starting dedicated Azure heartbeat logger...")
+    print("AZURE_STARTUP: Starting dedicated Azure heartbeat logger process")
+    sys.stdout.flush()
+    
+    try:
+        # First, check if the dedicated heartbeat script exists
+        if os.path.exists('azure_heartbeat.py'):
+            # Import and use the heartbeat module directly
+            try:
+                import azure_heartbeat
+                # Start heartbeat in a separate thread
+                heartbeat_thread = azure_heartbeat.start_threaded_heartbeat()
+                
+                logger.info("Started dedicated Azure heartbeat thread")
+                print("AZURE_STARTUP: Started dedicated heartbeat thread")
+                sys.stdout.flush()
+                
+                return True
+            except Exception as e:
+                logger.error(f"Error starting heartbeat module: {e}")
+                print(f"AZURE_STARTUP ERROR: Failed to start heartbeat module: {e}")
+                
+                # Fallback to subprocess method if module import fails
+                import subprocess
+                process = subprocess.Popen(
+                    ['python', 'azure_heartbeat.py'],
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True
+                )
+                
+                logger.info(f"Started fallback heartbeat process with PID: {process.pid}")
+                print(f"AZURE_STARTUP: Started fallback heartbeat process with PID: {process.pid}")
+                sys.stdout.flush()
+                
+                return True
+        else:
+            logger.warning("Dedicated Azure heartbeat script not found")
+            print("AZURE_STARTUP WARNING: azure_heartbeat.py not found!")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error starting Azure heartbeat logger: {e}")
+        print(f"AZURE_STARTUP ERROR: Failed to start dedicated heartbeat: {e}")
+        sys.stdout.flush()
+        return False
+
 async def main():
     """Main entry point to run both services concurrently"""
     logger.info("Starting services...")
+    print("AZURE_STARTUP: Starting all services...")
+    sys.stdout.flush()
     
-    # Since Patcher_API already starts its own Discord client,
-    # we don't need to start the Discord.py client separately
-    # Just run the Patcher_API
+    # Start the dedicated Azure heartbeat logger
+    heartbeat_started = await start_dedicated_heartbeat()
+    
+    # Print Azure heartbeat info whether it started or not
+    if heartbeat_started:
+        print("AZURE_STARTUP: Dedicated heartbeat logger is running")
+    else:
+        print("AZURE_STARTUP: Dedicated heartbeat logger failed to start - using only internal heartbeats")
+    sys.stdout.flush()
+    
+    # Run both the Discord bot and Patcher API as separate services
     try:
-        await run_api_server()
+        # Start both services concurrently
+        discord_task = asyncio.create_task(run_discord_bot())
+        api_task = asyncio.create_task(run_api_server())
+        
+        # Log that tasks are created
+        print("AZURE_STARTUP: Created async tasks for discord_bot and api_server")
+        sys.stdout.flush()
+        
+        # Wait for both to complete (they should run indefinitely)
+        await asyncio.gather(discord_task, api_task)
     except Exception as e:
         logger.error(f"Error in main: {e}")
+        print(f"AZURE ERROR: Error in main process: {e}")
+        sys.stdout.flush()
         sys.exit(1)
 
 if __name__ == "__main__":
