@@ -31,10 +31,11 @@ logging.basicConfig(
 logger = logging.getLogger("azure_heartbeat")
 
 # Constants
-DEFAULT_HEARTBEAT_INTERVAL = 300  # Default heartbeat interval in seconds (5 minutes)
-INITIAL_INTERVAL = 30  # Initial more frequent heartbeats (30 seconds)
+DEFAULT_HEARTBEAT_INTERVAL = 180  # Default heartbeat interval in seconds (3 minutes)
+INITIAL_INTERVAL = 45  # Initial more frequent heartbeats (45 seconds)
 NUM_INITIAL_BEATS = 5  # Number of initial more frequent heartbeats
 HEARTBEAT_LOGFILE = "/app/logs/azure_heartbeat.log"
+# Offset the Azure heartbeat from the Discord heartbeat to avoid overlapping logs
 
 # Ensure logs directory exists
 os.makedirs(os.path.dirname(HEARTBEAT_LOGFILE), exist_ok=True)
@@ -51,21 +52,41 @@ def force_azure_heartbeat_log(message):
     separator = "="*50
     formatted_message = f"\n{separator}\n❤️ AZURE HEARTBEAT ({timestamp})\n{message}\n{separator}\n"
     
-    # Method 1: Standard logging (keep it simple for structured logging)
+    # Track recent heartbeats to prevent excessive duplicate logging
+    current_time = int(time.time())
+    message_hash = hash(message[:20])  # Use first 20 chars to identify similar messages
+    
+    # Method 1: Standard logging (keep it simple for structured logging) - always do this one
     logger.info(f"HEARTBEAT: {message}")
     
-    # Method 2: Direct stdout write with flush - use the formatted version
-    print(formatted_message, flush=True)
+    # Only do the more verbose logging once per message type per minute
+    if not hasattr(force_azure_heartbeat_log, 'recent_logs'):
+        force_azure_heartbeat_log.recent_logs = {}
     
-    # Method 3: Direct stderr write with flush (Azure sometimes prioritizes stderr)
-    print(formatted_message, file=sys.stderr, flush=True)
+    # Check if we've recently logged this same message
+    recently_logged = False
+    if message_hash in force_azure_heartbeat_log.recent_logs:
+        last_time = force_azure_heartbeat_log.recent_logs[message_hash]
+        if current_time - last_time < 60:  # Within last minute
+            recently_logged = True
     
-    # Method 4: Write to dedicated heartbeat logfile - standard format for easy parsing
-    try:
-        with open(HEARTBEAT_LOGFILE, "a") as f:
-            f.write(heartbeat_msg + "\n")
-    except Exception as e:
-        print(f"Error writing to heartbeat logfile: {e}", file=sys.stderr, flush=True)
+    # Update the timestamp for this message hash
+    force_azure_heartbeat_log.recent_logs[message_hash] = current_time
+    
+    # Only proceed with the verbose logging if not recently logged
+    if not recently_logged:
+        # Method 2: Direct stdout write with flush - use the formatted version
+        print(formatted_message, flush=True)
+        
+        # Method 3: Direct stderr write with flush (Azure sometimes prioritizes stderr)
+        print(formatted_message, file=sys.stderr, flush=True)
+        
+        # Method 4: Write to dedicated heartbeat logfile - standard format for easy parsing
+        try:
+            with open(HEARTBEAT_LOGFILE, "a") as f:
+                f.write(heartbeat_msg + "\n")
+        except Exception as e:
+            print(f"Error writing to heartbeat logfile: {e}", file=sys.stderr, flush=True)
 
 
 async def dedicated_heartbeat_logger():

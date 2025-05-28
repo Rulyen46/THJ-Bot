@@ -1,5 +1,5 @@
 import os
-:import sys
+import sys
 import discord
 from dotenv import load_dotenv
 import logging
@@ -44,8 +44,9 @@ intents.message_content = True
 intents.guilds = True  # Needed for channel updates
 client = discord.Client(intents=intents, reconnect=True)
 
-# Define a health check interval (5 minutes)
-HEALTH_CHECK_INTERVAL = 300
+# Define health check intervals
+HEALTH_CHECK_INTERVAL = 120  # 2 minutes for stable heartbeat
+HEARTBEAT_INITIAL_INTERVAL = 30  # 30 seconds for initial heartbeats
 
 async def sync_changelog_on_startup():
     """Fetch all messages from the changelog channel and update changelog.md with any new ones."""
@@ -110,9 +111,9 @@ async def health_check():
     
     # Gradual startup - start with more frequent checks that get less frequent over time
     initial_checks = 5
-    initial_interval = 30  # 30 seconds
+    initial_interval = HEARTBEAT_INITIAL_INTERVAL  # 30 seconds by default
     current_interval = initial_interval
-    max_interval = HEALTH_CHECK_INTERVAL  # Final stable interval
+    max_interval = HEALTH_CHECK_INTERVAL  # Final stable interval (2 minutes)
     
     check_count = 0
     
@@ -203,7 +204,7 @@ async def health_check():
 async def on_ready():
     logger.info(f'Bot is ready and connected to Discord! Connected as {client.user.name} (ID: {client.user.id})')
     
-    # Start the health check task
+    # Start the health check task (only once)
     client.loop.create_task(health_check())
     logger.info("Health check task started")
     
@@ -219,9 +220,6 @@ async def on_ready():
                 logger.info(f"Found EXP boost channel: {channel.name}")
                 await update_server_status_from_channel(channel)
                 break
-    
-    # Start health check task
-    client.loop.create_task(health_check())
     
     # Set initial status
     await client.change_presence(
