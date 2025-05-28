@@ -48,6 +48,7 @@ root_logger.addHandler(stdout_handler)
 logger = logging.getLogger(__name__)
 
 # Initial startup log
+logger.info("=== API LOGGING TEST: This should appear in Azure ===")
 logger.info("=== Bot Starting Up ===")
 logger.info("Python version: %s", sys.version)
 logger.info("Current working directory: %s", os.getcwd())
