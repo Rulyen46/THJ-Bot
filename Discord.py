@@ -137,6 +137,10 @@ async def health_check():
             changelog_channel = client.get_channel(CHANGELOG_CHANNEL_ID)
             if changelog_channel:
                 heartbeat_lines.append(f"Monitoring changelog channel: #{changelog_channel.name}")
+                
+                # Check for new changelog messages during heartbeat
+                updates_found = await check_for_changelog_updates()
+                heartbeat_lines.append(f"Changelog check: {'Updates found and applied' if updates_found else 'No new updates'}")
             
             if EXP_BOOST_CHANNEL_ID:
                 exp_channel = client.get_channel(EXP_BOOST_CHANNEL_ID)
@@ -211,6 +215,10 @@ async def on_ready():
     # Force an immediate heartbeat log for Azure visibility
     force_azure_heartbeat_log(f"Discord bot ready - connected as {client.user.name}")
     
+    # Add debug log for intents configuration
+    logger.info(f"Bot intents configuration: message_content={intents.message_content}, guilds={intents.guilds}")
+    logger.info(f"Monitoring changelog channel ID: {CHANGELOG_CHANNEL_ID}")
+    
     await sync_changelog_on_startup()
     
     # Check for and update EXP boost status on startup
@@ -259,8 +267,12 @@ async def on_guild_channel_update(before, after):
 
 @client.event
 async def on_message(message):
+    # Debug log for ALL messages
+    logger.info(f"MESSAGE RECEIVED - Channel: {message.channel.id}, Author: {message.author}, Content: {message.content[:50]}...")
+
+    # Specific handler for changelog channel
     if message.channel.id == CHANGELOG_CHANNEL_ID:
-        logger.info(f"New message in changelog channel: {message.content}")
+        logger.info(f"CHANGELOG MESSAGE DETECTED - Content: {message.content}")
         
         # Update the changelog.md file with the new message
         try:
@@ -360,6 +372,38 @@ async def update_server_status_from_channel(channel):
 async def update_changelog_file(message):
     """Update the changelog.md file with a new message"""
     try:
+        # Log file path and check permissions
+        logger.info(f"Attempting to update changelog file at: {CHANGELOG_PATH}")
+        
+        # Check file permissions if the file exists
+        if os.path.exists(CHANGELOG_PATH):
+            try:
+                # Check if file is readable
+                with open(CHANGELOG_PATH, "r") as test_read:
+                    test_read.read(1)
+                logger.info("Changelog file is readable")
+                
+                # Check if file is writable
+                with open(CHANGELOG_PATH, "a") as test_write:
+                    test_write.write("")
+                logger.info("Changelog file is writable")
+            except Exception as e:
+                logger.error(f"Permission issue with changelog file: {str(e)}")
+        else:
+            logger.info("Changelog file does not exist yet and will be created")
+            
+            # Check if directory is writable
+            try:
+                dir_path = os.path.dirname(CHANGELOG_PATH)
+                os.makedirs(dir_path, exist_ok=True)
+                test_file = os.path.join(dir_path, "test_permissions.tmp")
+                with open(test_file, "w") as f:
+                    f.write("test")
+                os.remove(test_file)
+                logger.info("Directory is writable")
+            except Exception as e:
+                logger.error(f"Directory permission issue: {str(e)}")
+        
         # Format the new entry
         new_entry = format_changelog_entry(message)
         
@@ -470,3 +514,70 @@ if __name__ == "__main__":
         logger.critical(traceback.format_exc())
         # Wait a bit before exiting to allow logs to be written
         asyncio.run(asyncio.sleep(1))
+@client.event
+async def on_guild_available(guild):
+    """Called when a guild becomes available."""
+    logger.info(f"Guild available: {guild.name} (ID: {guild.id})")
+    # List all visible channels to validate permissions
+    visible_channels = [f"{channel.name} (ID: {channel.id})" for channel in guild.channels if isinstance(channel, discord.TextChannel)]
+    logger.info(f"Visible text channels: {', '.join(visible_channels)}")
+    
+    # Check if our target channel is visible
+    changelog_channel = client.get_channel(CHANGELOG_CHANNEL_ID)
+    if changelog_channel:
+        logger.info(f"Found changelog channel: {changelog_channel.name}")
+        # Check permissions in the changelog channel
+        permissions = changelog_channel.permissions_for(guild.me)
+        logger.info(f"Bot permissions in changelog channel: read_messages={permissions.read_messages}, send_messages={permissions.send_messages}, view_channel={permissions.view_channel}")
+    else:
+        logger.warning(f"Cannot find changelog channel with ID {CHANGELOG_CHANNEL_ID}")
+
+# Add a new member join event to test event handling
+@client.event
+async def on_member_join(member):
+    logger.info(f"Member joined: {member.name} (ID: {member.id})")
+    # This is just for testing Discord events - we don't need to take any action
+
+async def check_for_changelog_updates():
+    """Check for new messages in the changelog channel and update the changelog.md file"""
+    try:
+        logger.info("Checking for new changelog messages...")
+        
+        # Get changelog channel
+        channel = client.get_channel(CHANGELOG_CHANNEL_ID)
+        if not channel:
+            logger.error(f"Changelog channel with ID {CHANGELOG_CHANNEL_ID} not found.")
+            return False
+        
+        # Read existing changelog entries to avoid duplicates
+        existing_ids = set()
+        if os.path.exists(CHANGELOG_PATH):
+            with open(CHANGELOG_PATH, "r") as md_file:
+                content = md_file.read()
+                # Extract message IDs from the changelog file
+                existing_ids = set([m for m in re.findall(r"## Entry (\d+)", content)])
+                logger.info(f"Found {len(existing_ids)} existing entries in changelog.md")
+        
+        # Get recent messages from the channel (limit to last 50 to be efficient)
+        new_entries = []
+        async for message in channel.history(limit=50):
+            if str(message.id) not in existing_ids and message.content.strip():
+                logger.info(f"Found new changelog entry: {message.id}")
+                new_entries.append(message)
+        
+        # Process new entries (newest last to maintain chronological order in file)
+        if new_entries:
+            logger.info(f"Adding {len(new_entries)} new changelog entries to changelog.md")
+            # Sort by timestamp to ensure oldest first
+            new_entries.sort(key=lambda msg: msg.created_at)
+            for msg in new_entries:
+                await update_changelog_file(msg)
+            return True
+        else:
+            logger.info("No new changelog entries found.")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error checking for changelog updates: {str(e)}")
+        logger.error(traceback.format_exc())
+        return False
