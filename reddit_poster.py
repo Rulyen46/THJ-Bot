@@ -109,7 +109,7 @@ def update_pin_status(post_id, pinned):
         logger.error(f"Error updating pin status: {str(e)}")
 
 def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
-    """Format a changelog entry for Reddit."""
+    """Format a changelog entry for Reddit with proper markdown."""
     try:
         # Convert timestamp to datetime if it's a string
         if isinstance(timestamp, str):
@@ -125,14 +125,15 @@ def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
     # Clean Discord mentions from the content
     cleaned_content = clean_discord_mentions(message_content)
     
+    # Format for Reddit with proper spacing and markdown
     formatted_content = f"# Heroes' Journey Changelog Update\n\n"
-    formatted_content += f"**Author:** {author}\n"
-    formatted_content += f"**Date:** {formatted_date}\n"
+    formatted_content += f"**Author:** {author}  \n"  # Two spaces for line break
+    formatted_content += f"**Date:** {formatted_date}  \n"
     formatted_content += f"**Entry ID:** {entry_id}\n\n"
     formatted_content += f"---\n\n"
     formatted_content += cleaned_content
-    formatted_content += "\n\n---\n\n"
-    formatted_content += "*This post was automatically generated from the official changelog.*"
+    formatted_content += f"\n\n---\n\n"
+    formatted_content += f"*This post was automatically generated from the official changelog.*"
     
     return formatted_content
 
@@ -142,7 +143,7 @@ def clean_discord_mentions(content: str) -> str:
     """
     import re
     
-    # Remove Discord user mentions <@userid>
+    # Remove Discord user mentions <@userid> but preserve the surrounding text
     content = re.sub(r'<@\d+>', '', content)
     
     # Remove Discord role mentions <@&roleid> 
@@ -151,8 +152,7 @@ def clean_discord_mentions(content: str) -> str:
     # Remove Discord channel mentions <#channelid>
     content = re.sub(r'<#\d+>', '', content)
     
-    # Clean up any double spaces or hanging parentheses left by removed mentions
-    content = re.sub(r'\(\s*\)', '', content)  # Remove empty parentheses
+    # Clean up any double spaces left by removed mentions
     content = re.sub(r'\s+', ' ', content)     # Collapse multiple spaces
     content = content.strip()                   # Remove leading/trailing whitespace
     
@@ -364,8 +364,12 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         # Get the subreddit
         subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
-        # Create the post
-        submission = await subreddit.submit(title, selftext=formatted_body)
+        # Create the post with explicit parameters
+        submission = await subreddit.submit(
+            title=title, 
+            selftext=formatted_body,
+            send_replies=True  # Enable replies
+        )
         
         # IMPORTANT: Load the submission to access its attributes
         await submission.load()
