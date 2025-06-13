@@ -109,7 +109,7 @@ def update_pin_status(post_id, pinned):
         logger.error(f"Error updating pin status: {str(e)}")
 
 def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
-    """Format a changelog entry for Reddit with proper markdown."""
+    """Format a changelog entry for Reddit with Reddit-compatible markdown."""
     try:
         # Convert timestamp to datetime if it's a string
         if isinstance(timestamp, str):
@@ -125,25 +125,46 @@ def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
     # Clean Discord mentions from the content
     cleaned_content = clean_discord_mentions(message_content)
     
-    # Format for Reddit with proper spacing and markdown
-    formatted_content = f"# Heroes' Journey Changelog Update\n\n"
-    formatted_content += f"**Author:** {author}  \n"  # Two spaces for line break
-    formatted_content += f"**Date:** {formatted_date}  \n"
-    formatted_content += f"**Entry ID:** {entry_id}\n\n"
-    formatted_content += f"---\n\n"
-    formatted_content += cleaned_content
-    formatted_content += f"\n\n---\n\n"
-    formatted_content += f"*This post was automatically generated from the official changelog.*"
+    # Reddit-compatible formatting (Reddit is picky about markdown)
+    formatted_content = []
     
-    return formatted_content
+    # Header - Reddit prefers ## over #
+    formatted_content.append("## Heroes' Journey Changelog Update")
+    formatted_content.append("")  # Empty line after header
+    
+    # Metadata with proper spacing
+    formatted_content.append(f"**Author:** {author}")
+    formatted_content.append("")
+    formatted_content.append(f"**Date:** {formatted_date}")
+    formatted_content.append("")
+    formatted_content.append(f"**Entry ID:** {entry_id}")
+    formatted_content.append("")
+    
+    # Separator
+    formatted_content.append("---")
+    formatted_content.append("")
+    
+    # Main content
+    formatted_content.append(cleaned_content)
+    formatted_content.append("")
+    
+    # Footer separator
+    formatted_content.append("---")
+    formatted_content.append("")
+    formatted_content.append("*This post was automatically generated from the official changelog.*")
+    
+    # Join with single newlines (Reddit prefers this)
+    return "\n".join(formatted_content)
 
 def clean_discord_mentions(content: str) -> str:
     """
     Remove Discord user mentions and clean up the content for Reddit posting.
+    Preserve all other markdown formatting.
     """
     import re
     
-    # Remove Discord user mentions <@userid> but preserve the surrounding text
+    # Only remove Discord-specific mentions, preserve everything else
+    # Remove Discord user mentions <@userid>
     content = re.sub(r'<@\d+>', '', content)
     
     # Remove Discord role mentions <@&roleid> 
@@ -152,11 +173,13 @@ def clean_discord_mentions(content: str) -> str:
     # Remove Discord channel mentions <#channelid>
     content = re.sub(r'<#\d+>', '', content)
     
-    # Clean up any double spaces left by removed mentions
-    content = re.sub(r'\s+', ' ', content)     # Collapse multiple spaces
-    content = content.strip()                   # Remove leading/trailing whitespace
+    # Clean up extra whitespace left by removed mentions
+    # But preserve intentional line breaks and formatting
+    content = re.sub(r' +', ' ', content)  # Multiple spaces -> single space
+    content = re.sub(r'\n +', '\n', content)  # Remove spaces at start of lines
+    content = re.sub(r' +\n', '\n', content)  # Remove spaces at end of lines
     
-    return content
+    return content.strip()
 
 async def check_recent_reddit_posts(entry_id):
     """
@@ -364,25 +387,6 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         # Get the subreddit
         subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
-        # Logging cuz wtf is happening
-        log_message = f"Posting to Reddit - Title: {title}"
-        logger.info(log_message)
-        print(f"REDDIT_POST: {log_message}", flush=True)  # This will show up in main logs
-        
-        content_preview = f"Content preview (first 200 chars): {formatted_body[:200]}"
-        logger.info(content_preview)
-        print(f"REDDIT_POST: {content_preview}", flush=True)
-        
-        content_length = f"Content length: {len(formatted_body)} characters"
-        logger.info(content_length)
-        print(f"REDDIT_POST: {content_length}", flush=True)
-        
-        # Create the post with explicit parameters
-        submission = await subreddit.submit(
-            title=title, 
-            selftext=formatted_body,
-            send_replies=True
-        )
         # Create the post with explicit parameters
         submission = await subreddit.submit(
             title=title, 
