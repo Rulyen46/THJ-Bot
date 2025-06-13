@@ -1117,7 +1117,34 @@ def import_reddit_poster():
         logger.error(traceback.format_exc())
         return None
     
-combine_entries_for_reddit_api
+def combine_entries_for_reddit_api(entries):
+    """Combine multiple changelog entries into a single Reddit post for API use"""
+    if not entries:
+        return None
+        
+    # Sort by timestamp to ensure correct order
+    entries.sort(key=lambda x: x['timestamp'])
+    
+    # Use the first entry as the base
+    combined = entries[0].copy()
+    
+    # Combine all content and clean Discord mentions
+    combined_content = []
+    for entry in entries:
+        content = entry['content'].strip()
+        # Clean Discord mentions from each entry
+        cleaned_content = clean_discord_mentions(content)
+        combined_content.append(cleaned_content)
+    
+    # Join with double newlines for clean separation
+    combined['content'] = '\n\n'.join(combined_content)
+    
+    # Update the ID to reflect it's a combined post
+    if len(entries) > 1:
+        entry_ids = [e['id'] for e in entries]
+        combined['id'] = f"combined_{min(entry_ids)}_{max(entry_ids)}"
+    
+    return combined
 
 def combine_recent_entries(messages, max_age_minutes=30):
     """
