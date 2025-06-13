@@ -108,6 +108,31 @@ def update_pin_status(post_id, pinned):
     except Exception as e:
         logger.error(f"Error updating pin status: {str(e)}")
 
+def clean_discord_mentions(content: str) -> str:
+    """
+    Remove Discord user mentions and clean up the content for Reddit posting.
+    Preserve all other markdown formatting.
+    """
+    import re
+    
+    # Only remove Discord-specific mentions, preserve everything else
+    # Remove Discord user mentions <@userid>
+    content = re.sub(r'<@\d+>', '', content)
+    
+    # Remove Discord role mentions <@&roleid> 
+    content = re.sub(r'<@&\d+>', '', content)
+    
+    # Remove Discord channel mentions <#channelid>
+    content = re.sub(r'<#\d+>', '', content)
+    
+    # Clean up extra whitespace left by removed mentions
+    # But preserve intentional line breaks and formatting
+    content = re.sub(r' +', ' ', content)  # Multiple spaces -> single space
+    content = re.sub(r'\n +', '\n', content)  # Remove spaces at start of lines
+    content = re.sub(r' +\n', '\n', content)  # Remove spaces at end of lines
+    
+    return content.strip()
+
 def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
     """Format a changelog entry for Reddit with Reddit-compatible markdown."""
     try:
