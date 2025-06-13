@@ -109,6 +109,34 @@ def update_pin_status(post_id, pinned):
     except Exception as e:
         logger.error(f"Error updating pin status: {str(e)}")
 
+def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
+    """Format a changelog entry for Reddit."""
+    # Clean Discord mentions before formatting
+    cleaned_content = clean_discord_mentions(message_content)
+    
+    try:
+        # Convert timestamp to datetime if it's a string
+        if isinstance(timestamp, str):
+            try:
+                formatted_date = datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                formatted_date = timestamp  # Keep it as is if parsing fails
+        else:
+            formatted_date = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        formatted_date = str(timestamp)
+    
+    formatted_content = f"# Heroes' Journey Changelog Update\n\n"
+    formatted_content += f"**Author:** {author}\n"
+    formatted_content += f"**Date:** {formatted_date}\n"
+    formatted_content += f"**Entry ID:** {entry_id}\n\n"
+    formatted_content += f"---\n\n"
+    formatted_content += cleaned_content  # Use cleaned content
+    formatted_content += "\n\n---\n\n"
+    formatted_content += "*This post was automatically generated from the official changelog.*"
+    
+    return formatted_content
+
 def format_batched_changelog_for_reddit(entries, batch_id):
     """Format multiple changelog entries as a single Reddit post."""
     
@@ -116,6 +144,9 @@ def format_batched_changelog_for_reddit(entries, batch_id):
     if len(entries) == 1:
         # Single entry
         entry = entries[0]
+        # Clean Discord mentions
+        cleaned_content = clean_discord_mentions(entry['content'])
+        
         try:
             formatted_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
         except:
@@ -126,7 +157,7 @@ def format_batched_changelog_for_reddit(entries, batch_id):
         formatted_content += f"**Author:** {entry['author']}\n"
         formatted_content += f"**Entry ID:** {entry['id']}\n\n"
         formatted_content += f"---\n\n"
-        formatted_content += entry['content']
+        formatted_content += cleaned_content  # Use cleaned content
         
     else:
         # Multiple entries - create a batched post
@@ -165,6 +196,9 @@ def format_batched_changelog_for_reddit(entries, batch_id):
         
         # Add each entry's content
         for i, entry in enumerate(entries):
+            # Clean Discord mentions for each entry
+            cleaned_content = clean_discord_mentions(entry['content'])
+            
             # Add a subtle separator between entries if there are multiple
             if i > 0:
                 formatted_content += "\n\n"
@@ -181,8 +215,8 @@ def format_batched_changelog_for_reddit(entries, batch_id):
             else:
                 formatted_content += f"**[{entry_time}]**\n\n"
             
-            # Add the content
-            formatted_content += entry['content']
+            # Add the cleaned content
+            formatted_content += cleaned_content
     
     formatted_content += "\n\n---\n\n"
     formatted_content += "*This post was automatically generated from the official changelog.*"
@@ -556,6 +590,25 @@ def save_batch_post_info(batch_id, entries, post_id, title, url, flair_applied=N
         logger.info(f"Saved batch post info for {len(entries)} entries: {post_id}")
     except Exception as e:
         logger.error(f"Error saving batch post info: {str(e)}")
+
+def clean_discord_mentions(content):
+    """
+    Remove Discord user mentions from changelog content.
+    Removes patterns like ( <@123456789> ) from the end of lines.
+    Also handles @ mentions like (@Username).
+    """
+    # Remove Discord user ID mentions in format ( <@123456789> )
+    # This regex matches the pattern with optional spaces
+    content = re.sub(r'\s*\(\s*<@\d+>\s*\)', '', content)
+    
+    # Remove @ mentions in format ( @Username)
+    content = re.sub(r'\s*\(\s*@[\w\s]+\)', '', content)
+    
+    # Clean up any trailing spaces left behind
+    lines = content.split('\n')
+    cleaned_lines = [line.rstrip() for line in lines]
+    
+    return '\n'.join(cleaned_lines)
 
 async def post_changelog_to_reddit(entry, test_mode=False, force=False):
     """
