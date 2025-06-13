@@ -1117,32 +1117,7 @@ def import_reddit_poster():
         logger.error(traceback.format_exc())
         return None
     
-def combine_entries_for_reddit_api(entries):
-    """Combine multiple changelog entries into a single Reddit post for API use"""
-    if not entries:
-        return None
-        
-    # Sort by timestamp to ensure correct order
-    entries.sort(key=lambda x: x['timestamp'])
-    
-    # Use the first entry as the base
-    combined = entries[0].copy()
-    
-    # Combine all content
-    combined_content = []
-    for entry in entries:
-        content = entry['content'].strip()
-        combined_content.append(content)
-    
-    # Join with double newlines for clean separation
-    combined['content'] = '\n\n'.join(combined_content)
-    
-    # Update the ID to reflect it's a combined post
-    if len(entries) > 1:
-        entry_ids = [e['id'] for e in entries]
-        combined['id'] = f"combined_{min(entry_ids)}_{max(entry_ids)}"
-    
-    return combined
+combine_entries_for_reddit_api
 
 def combine_recent_entries(messages, max_age_minutes=30):
     """
@@ -1244,6 +1219,28 @@ def combine_recent_entries(messages, max_age_minutes=30):
             logger.info(f"Created combined entry: {combined['id']}")
     
     return combined_entries
+
+def clean_discord_mentions(content: str) -> str:
+    """
+    Remove Discord user mentions and clean up the content for Reddit posting.
+    """
+    import re
+    
+    # Remove Discord user mentions <@userid>
+    content = re.sub(r'<@\d+>', '', content)
+    
+    # Remove Discord role mentions <@&roleid> 
+    content = re.sub(r'<@&\d+>', '', content)
+    
+    # Remove Discord channel mentions <#channelid>
+    content = re.sub(r'<#\d+>', '', content)
+    
+    # Clean up any double spaces or hanging parentheses left by removed mentions
+    content = re.sub(r'\(\s*\)', '', content)  # Remove empty parentheses
+    content = re.sub(r'\s+', ' ', content)     # Collapse multiple spaces
+    content = content.strip()                   # Remove leading/trailing whitespace
+    
+    return content
 
 
 @app.post("/reddit/post-changelog", dependencies=[Depends(verify_token)])

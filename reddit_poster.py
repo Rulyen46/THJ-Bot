@@ -122,16 +122,41 @@ def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
     except:
         formatted_date = str(timestamp)
     
+    # Clean Discord mentions from the content
+    cleaned_content = clean_discord_mentions(message_content)
+    
     formatted_content = f"# Heroes' Journey Changelog Update\n\n"
     formatted_content += f"**Author:** {author}\n"
     formatted_content += f"**Date:** {formatted_date}\n"
     formatted_content += f"**Entry ID:** {entry_id}\n\n"
     formatted_content += f"---\n\n"
-    formatted_content += message_content
+    formatted_content += cleaned_content
     formatted_content += "\n\n---\n\n"
     formatted_content += "*This post was automatically generated from the official changelog.*"
     
     return formatted_content
+
+def clean_discord_mentions(content: str) -> str:
+    """
+    Remove Discord user mentions and clean up the content for Reddit posting.
+    """
+    import re
+    
+    # Remove Discord user mentions <@userid>
+    content = re.sub(r'<@\d+>', '', content)
+    
+    # Remove Discord role mentions <@&roleid> 
+    content = re.sub(r'<@&\d+>', '', content)
+    
+    # Remove Discord channel mentions <#channelid>
+    content = re.sub(r'<#\d+>', '', content)
+    
+    # Clean up any double spaces or hanging parentheses left by removed mentions
+    content = re.sub(r'\(\s*\)', '', content)  # Remove empty parentheses
+    content = re.sub(r'\s+', ' ', content)     # Collapse multiple spaces
+    content = content.strip()                   # Remove leading/trailing whitespace
+    
+    return content
 
 async def check_recent_reddit_posts(entry_id):
     """
