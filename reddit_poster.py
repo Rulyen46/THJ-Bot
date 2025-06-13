@@ -364,6 +364,18 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         # Get the subreddit
         subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
+        # Add this right before the submission:
+        logger.info(f"Posting to Reddit:")
+        logger.info(f"Title: {title}")
+        logger.info(f"Content preview (first 200 chars): {formatted_body[:200]}")
+        logger.info(f"Content length: {len(formatted_body)} characters")
+        
+        # Create the post with explicit parameters
+        submission = await subreddit.submit(
+            title=title, 
+            selftext=formatted_body,
+            send_replies=True
+        )
         # Create the post with explicit parameters
         submission = await subreddit.submit(
             title=title, 
