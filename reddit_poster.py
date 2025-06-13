@@ -4,7 +4,6 @@ from datetime import datetime
 import json
 import traceback
 import asyncpraw
-import re
 
 # Ensure the logs directory exists before any logging
 os.makedirs('/app/logs', exist_ok=True)
@@ -27,7 +26,7 @@ REDDIT_USERNAME = os.getenv('REDDIT_USERNAME')
 REDDIT_PASSWORD = os.getenv('REDDIT_PASSWORD')
 REDDIT_USER_AGENT = os.getenv('REDDIT_USER_AGENT', 'ChangelogPoster by /u/YourUsername')
 REDDIT_SUBREDDIT = os.getenv('REDDIT_SUBREDDIT')
-REDDIT_FLAIR_NAME = os.getenv('REDDIT_FLAIR_NAME', 'Change-Log')
+REDDIT_FLAIR_NAME = os.getenv('REDDIT_FLAIR_NAME', 'Change-Log')  # Default to 'Change-Log'
 
 # Path to store Reddit posts information
 REDDIT_POSTS_PATH = "/app/reddit_posts.json"
@@ -71,6 +70,7 @@ def save_post_info(entry_id, post_id, title, url, flair_applied=None, force_used
     """Save information about a posted changelog entry."""
     posts_data = get_posted_entries()
     
+    # Add the new post
     posts_data["posts"].append({
         "entry_id": entry_id,
         "post_id": post_id,
@@ -82,6 +82,7 @@ def save_post_info(entry_id, post_id, title, url, flair_applied=None, force_used
         "force_used": force_used
     })
     
+    # Sort posts by posted_at to maintain chronological order
     posts_data["posts"].sort(key=lambda x: x["posted_at"], reverse=True)
     
     try:
@@ -107,13 +108,24 @@ def update_pin_status(post_id, pinned):
         logger.error(f"Error updating pin status: {str(e)}")
 
 def clean_discord_mentions(content: str) -> str:
-    """Remove Discord user mentions and clean up the content for Reddit posting."""
-    # Remove Discord-specific mentions
-    content = re.sub(r'<@\d+>', '', content)  # User mentions
-    content = re.sub(r'<@&\d+>', '', content)  # Role mentions  
-    content = re.sub(r'<#\d+>', '', content)  # Channel mentions
+    """
+    Remove Discord user mentions and clean up the content for Reddit posting.
+    Preserve all other markdown formatting.
+    """
+    import re
+    
+    # Only remove Discord-specific mentions, preserve everything else
+    # Remove Discord user mentions <@userid>
+    content = re.sub(r'<@\d+>', '', content)
+    
+    # Remove Discord role mentions <@&roleid> 
+    content = re.sub(r'<@&\d+>', '', content)
+    
+    # Remove Discord channel mentions <#channelid>
+    content = re.sub(r'<#\d+>', '', content)
     
     # Clean up extra whitespace left by removed mentions
+    # But preserve intentional line breaks and formatting
     content = re.sub(r' +', ' ', content)  # Multiple spaces -> single space
     content = re.sub(r'\n +', '\n', content)  # Remove spaces at start of lines
     content = re.sub(r' +\n', '\n', content)  # Remove spaces at end of lines
@@ -121,56 +133,60 @@ def clean_discord_mentions(content: str) -> str:
     return content.strip()
 
 def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
-    """Format a changelog entry for Reddit with enhanced markdown."""
+    """Format a changelog entry for Reddit with clean, simple markdown."""
     try:
         # Convert timestamp to datetime if it's a string
         if isinstance(timestamp, str):
             try:
-                formatted_date = datetime.fromisoformat(timestamp.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S UTC")
+                formatted_date = datetime.fromisoformat(timestamp.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S")
             except ValueError:
-                formatted_date = timestamp
+                formatted_date = timestamp  # Keep it as is if parsing fails
         else:
-            formatted_date = timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+            formatted_date = timestamp.strftime("%Y-%m-%d %H:%M:%S")
     except:
         formatted_date = str(timestamp)
     
     # Clean Discord mentions from the content
     cleaned_content = clean_discord_mentions(message_content)
     
-    # Build the formatted post with enhanced markdown
+    # Build the formatted post with simple, clean markdown
     formatted_parts = []
     
-    # Header with emoji
-    formatted_parts.append("## 🎮 Heroes' Journey Changelog Update")
+    # Simple header
+    formatted_parts.append("## Heroes' Journey Changelog Update")
+    formatted_parts.append("")  # Empty line after header
+    
+    # Simple metadata - no table, just clean text
+    formatted_parts.append(f"**Author:** {author}")
+    formatted_parts.append("")
+    formatted_parts.append(f"**Date:** {formatted_date}")
+    formatted_parts.append("")
+    formatted_parts.append(f"**Entry ID:** {entry_id}")
     formatted_parts.append("")
     
-    # Metadata table
-    formatted_parts.append("| Field | Value |")
-    formatted_parts.append("|-------|-------|")
-    formatted_parts.append(f"| 👤 **Author** | {author} |")
-    formatted_parts.append(f"| 📅 **Date** | {formatted_date} |")
-    formatted_parts.append(f"| 🔗 **Entry ID** | `{entry_id}` |")
-    formatted_parts.append("")
-    
-    # Main separator
+    # Simple separator
     formatted_parts.append("---")
     formatted_parts.append("")
     
-    # Main content
-    formatted_parts.append("### 📋 Changelog Details")
-    formatted_parts.append("")
+    # Main content - just the cleaned content, no extra wrapper
     formatted_parts.append(cleaned_content)
     formatted_parts.append("")
     
-    # Footer
+    # Simple footer
     formatted_parts.append("---")
     formatted_parts.append("")
     formatted_parts.append("*This post was automatically generated from the official changelog.*")
     
+    # Join with single newlines (Reddit prefers this)
     return "\n".join(formatted_parts)
 
 async def check_recent_reddit_posts(entry_id):
-    """Check if a changelog entry has already been posted to Reddit by scanning recent posts."""
+    """
+    Check if a changelog entry has already been posted to Reddit by scanning recent posts.
+    This is a backup check in case our local tracking gets out of sync.
+    
+    Returns True if duplicate found, False otherwise.
+    """
     try:
         reddit = await initialize_reddit()
         if not reddit:
@@ -184,7 +200,7 @@ async def check_recent_reddit_posts(entry_id):
         async for submission in subreddit.new(limit=25):
             post_count += 1
             # Check if the post body contains our entry ID
-            if hasattr(submission, 'selftext') and f"Entry ID** | `{entry_id}`" in submission.selftext:
+            if hasattr(submission, 'selftext') and f"Entry ID:** {entry_id}" in submission.selftext:
                 logger.warning(f"Found duplicate post for entry {entry_id}: {submission.url}")
                 await reddit.close()
                 return True
@@ -195,10 +211,21 @@ async def check_recent_reddit_posts(entry_id):
         
     except Exception as e:
         logger.error(f"Error checking for duplicate posts: {str(e)}")
+        # Don't block posting if duplicate check fails
         return False
 
 async def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_name=None):
-    """Find and apply an appropriate flair to the post."""
+    """Find and apply an appropriate flair to the post.
+    
+    Args:
+        reddit: The Reddit instance
+        submission: The submission to flair
+        subreddit: The subreddit object
+        preferred_flair_name: Preferred flair name (optional)
+        
+    Returns:
+        Tuple of (success, flair_name)
+    """
     try:
         # Get available flairs for the subreddit
         available_flairs = []
@@ -211,37 +238,43 @@ async def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_na
             
         logger.info(f"Found {len(available_flairs)} flairs for r/{subreddit.display_name}")
         
+        # Log available flairs for debugging
+        flair_names = [f["text"] for f in available_flairs if "text" in f]
+        logger.info(f"Available flairs: {', '.join(flair_names)}")
+        
         # Select the appropriate flair
         selected_flair = None
-        flair_name_to_use = preferred_flair_name or REDDIT_FLAIR_NAME
         
-        # First try to find the exact flair
-        for flair in available_flairs:
-            if "text" in flair and flair["text"].lower() == flair_name_to_use.lower():
-                selected_flair = flair
-                logger.info(f"Found exact match for flair '{flair_name_to_use}'")
-                break
+        # First try to find the preferred flair if specified
+        if preferred_flair_name:
+            for flair in available_flairs:
+                if "text" in flair and flair["text"].lower() == preferred_flair_name.lower():
+                    selected_flair = flair
+                    logger.info(f"Found exact match for preferred flair '{preferred_flair_name}'")
+                    break
         
-        # If we didn't find the exact flair, look for keyword matches
+        # If we didn't find the preferred flair, look for changelog/announcement flairs
         if not selected_flair:
             flair_keywords = ["change-log", "changelog", "change log", "announcement", "update", "important", "info"]
             
             for keyword in flair_keywords:
                 if selected_flair:
                     break
+                    
                 for flair in available_flairs:
                     if "text" in flair and keyword in flair["text"].lower():
                         selected_flair = flair
                         logger.info(f"Selected flair '{flair['text']}' based on keyword '{keyword}'")
                         break
         
-        # Apply the flair if found
+        # If we found a flair, apply it
         if selected_flair:
             flair_id = selected_flair.get("id") or selected_flair.get("flair_template_id")
             if not flair_id:
                 logger.error(f"No flair ID found in selected flair: {selected_flair}")
                 return (False, selected_flair.get("text"))
                 
+            # Apply the flair
             await submission.flair.select(flair_id)
             logger.info(f"Applied flair '{selected_flair.get('text')}' to post {submission.id}")
             return (True, selected_flair.get("text"))
@@ -255,7 +288,11 @@ async def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_na
         return (False, None)
 
 async def manage_pinned_posts(reddit, current_post_id):
-    """Manage pinned posts in the subreddit."""
+    """Manage pinned posts in the subreddit.
+    
+    Reddit only allows 2 pinned posts per subreddit,
+    so we need to unpin the oldest one if we're at the limit.
+    """
     try:
         subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
@@ -295,17 +332,14 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
     """
     Post a single changelog entry to Reddit as a new pinned post with flair.
     
-    This is the MAIN function used by your API endpoints.
-    
     Parameters:
-    - entry: The changelog entry to post (dict with id, content, timestamp, author)
+    - entry: The changelog entry to post
     - test_mode: If True, simulates posting without making actual Reddit API calls
     - force: If True, bypasses duplicate checking and posts anyway
     
     Returns:
     - (success, message): Tuple of success boolean and result message
     """
-    logger.info(f"Starting Reddit post for entry {entry['id']} (test_mode={test_mode}, force={force})")
     
     # Check if this entry has already been posted (unless force is True)
     if not force:
@@ -322,7 +356,7 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
             logger.warning(f"Found duplicate post for entry {entry['id']} on Reddit but not in local tracking")
             return False, f"Duplicate post detected on Reddit for entry {entry['id']} (use force=True to override)"
 
-    # Format the entry for Reddit
+    # Format the entry for logging/testing
     formatted_body = format_changelog_for_reddit(
         entry["content"],
         entry["timestamp"],
@@ -332,16 +366,16 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
     
     # Create title from the first line of content or use a generic title
     content_lines = entry["content"].split('\n')
-    title_text = next((line.strip() for line in content_lines if line.strip()), "Heroes' Journey Update")
+    title_text = next((line for line in content_lines if line.strip()), "Heroes' Journey Update")
     
-    # Clean the title and add emoji
+    # Clean the title - simple format without emoji
     title_text = clean_discord_mentions(title_text)
-    title = f"🎮 Update: {title_text[:70]}..." if len(title_text) > 70 else f"🎮 Update: {title_text}"
+    title = f"Update: {title_text[:80]}" if len(title_text) > 80 else f"Update: {title_text}"
     
     # If in test mode, just return the formatted content without posting
     if test_mode:
         logger.info(f"TEST MODE: Would post entry {entry['id']} with title '{title}'")
-        return True, f"Test successful - would post to Reddit with title: '{title}'"
+        return True, "Test successful - would post to Reddit (test mode enabled)"
     
     # Initialize Reddit API
     reddit = await initialize_reddit()
@@ -353,14 +387,14 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         # Get the subreddit
         subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
-        # Create the post
+        # Create the post with explicit parameters
         submission = await subreddit.submit(
             title=title, 
             selftext=formatted_body,
-            send_replies=True
+            send_replies=True  # Enable replies
         )
         
-        # Load the submission to access its attributes
+        # IMPORTANT: Load the submission to access its attributes
         await submission.load()
         
         logger.info(f"Created new post for entry {entry['id']}: {submission.id} - {submission.title}")
@@ -385,7 +419,7 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         except Exception as e:
             logger.warning(f"Could not pin post {submission.id}: {str(e)}")
         
-        # Save post info
+        # Save post info with enhanced tracking
         save_post_info(
             entry["id"],
             submission.id,
@@ -411,7 +445,6 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         await reddit.close()
         
         return True, f"Created new post{status_message}: {submission.url}"
-        
     except Exception as e:
         logger.error(f"Error creating Reddit post: {str(e)}")
         logger.error(traceback.format_exc())
@@ -423,9 +456,9 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         except:
             pass
 
-# Helper functions for testing and admin use
+# Async helper functions for testing
 async def get_reddit_info():
-    """Get basic Reddit information for testing and diagnostics."""
+    """Get basic Reddit information for testing."""
     reddit = await initialize_reddit()
     if not reddit:
         return None
@@ -438,10 +471,12 @@ async def get_reddit_info():
         mod_permissions = []
 
         try:
+            # Fix: Await the moderator() call first
             moderators = await subreddit.moderator()
             for mod in moderators:
                 if mod.name.lower() == REDDIT_USERNAME.lower():
                     is_mod = True
+                    # Get mod permissions if available
                     try:
                         mod_permissions = list(mod.mod_permissions) if hasattr(mod, 'mod_permissions') else []
                     except:
@@ -489,6 +524,70 @@ async def get_reddit_info():
         
     except Exception as e:
         logger.error(f"Error getting Reddit info: {str(e)}")
+        try:
+            await reddit.close()
+        except:
+            pass
+        return None
+    
+async def test_pin_post(post_id):
+    """Test pinning a specific Reddit post."""
+    reddit = await initialize_reddit()
+    if not reddit:
+        return None
+    
+    try:
+        submission = await reddit.submission(id=post_id)
+        await submission.load()
+        
+        # Get the subreddit
+        subreddit = await reddit.subreddit(submission.subreddit.display_name)
+        
+        # Check if user is moderator
+        is_mod = False
+        mod_permissions = []
+        try:
+            # Fix: Await the moderator() call first
+            moderators = await subreddit.moderator()
+            for mod in moderators:
+                if mod.name.lower() == REDDIT_USERNAME.lower():
+                    is_mod = True
+                    if hasattr(mod, 'mod_permissions'):
+                        mod_permissions = list(mod.mod_permissions)
+                    break
+        except Exception as e:
+            logger.warning(f"Could not check moderator status: {e}")
+            is_mod = False
+            mod_permissions = []
+                
+        # Try to pin
+        pin_success = False
+        pin_error = None
+        if is_mod:
+            try:
+                await submission.mod.sticky()
+                pin_success = True
+            except Exception as e:
+                pin_error = str(e)
+                logger.error(f"Error pinning: {pin_error}")
+        
+        result = {
+            "post_id": post_id,
+            "post_title": submission.title,
+            "subreddit": f"r/{subreddit.display_name}",
+            "account": REDDIT_USERNAME,
+            "is_moderator": is_mod,
+            "mod_permissions": mod_permissions,
+            "pin_attempted": is_mod,
+            "pin_successful": pin_success,
+            "pin_error": pin_error
+        }
+        
+        await reddit.close()
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error accessing post: {str(e)}")
         try:
             await reddit.close()
         except:
