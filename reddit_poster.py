@@ -392,6 +392,7 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
             title=title, 
             selftext=formatted_body,
             send_replies=True  # Enable replies
+            api_type='json',
         )
         
         # IMPORTANT: Load the submission to access its attributes
