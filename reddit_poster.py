@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import traceback
 import asyncpraw
+import re
 
 # Ensure the logs directory exists before any logging
 os.makedirs('/app/logs', exist_ok=True)
@@ -132,52 +133,111 @@ def clean_discord_mentions(content: str) -> str:
     
     return content.strip()
 
+def detect_markdown_formatting(content: str) -> dict:
+    """
+    Analyze content to detect if it's already well-formatted markdown.
+    
+    Returns dict with formatting analysis to determine processing approach.
+    """
+    analysis = {
+        'has_headers': False,
+        'has_lists': False,
+        'has_code_blocks': False,
+        'has_tables': False,
+        'has_emphasis': False,
+        'complexity_score': 0,
+        'needs_minimal_formatting': True
+    }
+    
+    # Check for markdown headers
+    if re.search(r'^#+\s', content, re.MULTILINE):
+        analysis['has_headers'] = True
+        analysis['complexity_score'] += 2
+    
+    # Check for lists
+    if re.search(r'^[\*\-\+]\s', content, re.MULTILINE) or re.search(r'^\d+\.\s', content, re.MULTILINE):
+        analysis['has_lists'] = True
+        analysis['complexity_score'] += 1
+    
+    # Check for code blocks
+    if '```' in content or re.search(r'`[^`]+`', content):
+        analysis['has_code_blocks'] = True
+        analysis['complexity_score'] += 2
+    
+    # Check for tables
+    if '|' in content and re.search(r'\|.*\|', content):
+        analysis['has_tables'] = True
+        analysis['complexity_score'] += 2
+    
+    # Check for emphasis
+    if re.search(r'\*\*[^*]+\*\*', content) or re.search(r'\*[^*]+\*', content):
+        analysis['has_emphasis'] = True
+        analysis['complexity_score'] += 1
+    
+    # If content is already well-formatted, use minimal processing
+    analysis['needs_minimal_formatting'] = analysis['complexity_score'] >= 3
+    
+    return analysis
+
 def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
-    """Format a changelog entry for Reddit with clean, simple markdown."""
+    """
+    Smart formatter that adapts based on existing markdown formatting.
+    If content is already well-formatted from .md file, it does minimal processing.
+    """
     try:
-        # Convert timestamp to datetime if it's a string
+        # Convert timestamp
         if isinstance(timestamp, str):
             try:
                 formatted_date = datetime.fromisoformat(timestamp.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S")
             except ValueError:
-                formatted_date = timestamp  # Keep it as is if parsing fails
+                formatted_date = timestamp
         else:
             formatted_date = timestamp.strftime("%Y-%m-%d %H:%M:%S")
     except:
         formatted_date = str(timestamp)
     
-    # Clean Discord mentions from the content
+    # Clean Discord mentions
     cleaned_content = clean_discord_mentions(message_content)
     
-    # Build the formatted post with simple, clean markdown
+    # Analyze the content to determine formatting approach
+    analysis = detect_markdown_formatting(cleaned_content)
+    
     formatted_parts = []
     
-    # Simple header
-    formatted_parts.append("## Heroes' Journey Changelog Update")
-    formatted_parts.append("")  # Empty line after header
+    if analysis['needs_minimal_formatting']:
+        # Content is already well-formatted from .md file - use minimal approach
+        logger.info(f"Using minimal formatting for entry {entry_id} (complexity score: {analysis['complexity_score']})")
+        
+        # Simple header with metadata in one line
+        formatted_parts.append(f"**Heroes' Journey Update** | Author: {author} | Date: {formatted_date} | Entry: {entry_id}")
+        formatted_parts.append("")
+        formatted_parts.append("---")
+        formatted_parts.append("")
+        
+        # Use content as-is since it's already formatted
+        formatted_parts.append(cleaned_content)
+        formatted_parts.append("")
+        formatted_parts.append("---")
+        formatted_parts.append("*Auto-posted from changelog*")
+    else:
+        # Content needs more structure - use enhanced formatting  
+        logger.info(f"Using enhanced formatting for entry {entry_id} (complexity score: {analysis['complexity_score']})")
+        
+        formatted_parts.append("## Heroes' Journey Changelog Update")
+        formatted_parts.append("")
+        formatted_parts.append(f"**Author:** {author}")
+        formatted_parts.append("")
+        formatted_parts.append(f"**Date:** {formatted_date}")
+        formatted_parts.append("")
+        formatted_parts.append(f"**Entry ID:** {entry_id}")
+        formatted_parts.append("")
+        formatted_parts.append("---")
+        formatted_parts.append("")
+        formatted_parts.append(cleaned_content)
+        formatted_parts.append("")
+        formatted_parts.append("---")
+        formatted_parts.append("*This post was automatically generated from the official changelog.*")
     
-    # Simple metadata - no table, just clean text
-    formatted_parts.append(f"**Author:** {author}")
-    formatted_parts.append("")
-    formatted_parts.append(f"**Date:** {formatted_date}")
-    formatted_parts.append("")
-    formatted_parts.append(f"**Entry ID:** {entry_id}")
-    formatted_parts.append("")
-    
-    # Simple separator
-    formatted_parts.append("---")
-    formatted_parts.append("")
-    
-    # Main content - just the cleaned content, no extra wrapper
-    formatted_parts.append(cleaned_content)
-    formatted_parts.append("")
-    
-    # Simple footer
-    formatted_parts.append("---")
-    formatted_parts.append("")
-    formatted_parts.append("*This post was automatically generated from the official changelog.*")
-    
-    # Join with single newlines (Reddit prefers this)
     return "\n".join(formatted_parts)
 
 async def check_recent_reddit_posts(entry_id):
