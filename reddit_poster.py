@@ -364,11 +364,18 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         # Get the subreddit
         subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
-        # Add this right before the submission:
-        logger.info(f"Posting to Reddit:")
-        logger.info(f"Title: {title}")
-        logger.info(f"Content preview (first 200 chars): {formatted_body[:200]}")
-        logger.info(f"Content length: {len(formatted_body)} characters")
+        # Logging cuz wtf is happening
+        log_message = f"Posting to Reddit - Title: {title}"
+        logger.info(log_message)
+        print(f"REDDIT_POST: {log_message}", flush=True)  # This will show up in main logs
+        
+        content_preview = f"Content preview (first 200 chars): {formatted_body[:200]}"
+        logger.info(content_preview)
+        print(f"REDDIT_POST: {content_preview}", flush=True)
+        
+        content_length = f"Content length: {len(formatted_body)} characters"
+        logger.info(content_length)
+        print(f"REDDIT_POST: {content_length}", flush=True)
         
         # Create the post with explicit parameters
         submission = await subreddit.submit(
