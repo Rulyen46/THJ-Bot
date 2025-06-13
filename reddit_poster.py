@@ -1,9 +1,10 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import traceback
 import asyncpraw
+import re
 
 # Ensure the logs directory exists before any logging
 os.makedirs('/app/logs', exist_ok=True)
@@ -108,30 +109,98 @@ def update_pin_status(post_id, pinned):
     except Exception as e:
         logger.error(f"Error updating pin status: {str(e)}")
 
-def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
-    """Format a changelog entry for Reddit."""
-    try:
-        # Convert timestamp to datetime if it's a string
-        if isinstance(timestamp, str):
-            try:
-                formatted_date = datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                formatted_date = timestamp  # Keep it as is if parsing fails
-        else:
-            formatted_date = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    except:
-        formatted_date = str(timestamp)
+def format_batched_changelog_for_reddit(entries, batch_id):
+    """Format multiple changelog entries as a single Reddit post."""
     
-    formatted_content = f"# Heroes' Journey Changelog Update\n\n"
-    formatted_content += f"**Author:** {author}\n"
-    formatted_content += f"**Date:** {formatted_date}\n"
-    formatted_content += f"**Entry ID:** {entry_id}\n\n"
-    formatted_content += f"---\n\n"
-    formatted_content += message_content
+    # Get the date range
+    if len(entries) == 1:
+        # Single entry
+        entry = entries[0]
+        try:
+            formatted_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            formatted_date = entry["timestamp"]
+            
+        formatted_content = f"# Heroes' Journey Changelog Update\n\n"
+        formatted_content += f"**Date:** {formatted_date}\n"
+        formatted_content += f"**Author:** {entry['author']}\n"
+        formatted_content += f"**Entry ID:** {entry['id']}\n\n"
+        formatted_content += f"---\n\n"
+        formatted_content += entry['content']
+        
+    else:
+        # Multiple entries - create a batched post
+        first_entry = entries[0]
+        last_entry = entries[-1]
+        
+        try:
+            start_date = datetime.fromisoformat(first_entry["timestamp"].replace("Z", "+00:00"))
+            end_date = datetime.fromisoformat(last_entry["timestamp"].replace("Z", "+00:00"))
+            
+            # Format the date range
+            if start_date.date() == end_date.date():
+                # Same day
+                date_str = f"{start_date.strftime('%Y-%m-%d')} ({start_date.strftime('%H:%M')} - {end_date.strftime('%H:%M')})"
+            else:
+                # Different days
+                date_str = f"{start_date.strftime('%Y-%m-%d %H:%M')} - {end_date.strftime('%Y-%m-%d %H:%M')}"
+                
+        except:
+            date_str = f"{first_entry['timestamp']} - {last_entry['timestamp']}"
+        
+        # Collect unique authors
+        authors = []
+        seen_authors = set()
+        for entry in entries:
+            if entry['author'] not in seen_authors:
+                authors.append(entry['author'])
+                seen_authors.add(entry['author'])
+        
+        formatted_content = f"# Heroes' Journey Changelog Update\n\n"
+        formatted_content += f"**Date Range:** {date_str}\n"
+        formatted_content += f"**Authors:** {', '.join(authors)}\n"
+        formatted_content += f"**Updates:** {len(entries)} changelog entries\n"
+        formatted_content += f"**Batch ID:** {batch_id}\n\n"
+        formatted_content += f"---\n\n"
+        
+        # Add each entry's content
+        for i, entry in enumerate(entries):
+            # Add a subtle separator between entries if there are multiple
+            if i > 0:
+                formatted_content += "\n\n"
+            
+            # Add entry metadata as a smaller header
+            try:
+                entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%H:%M")
+            except:
+                entry_time = entry["timestamp"]
+                
+            # Only show author if different from previous
+            if i == 0 or entry['author'] != entries[i-1]['author']:
+                formatted_content += f"**[{entry_time} - {entry['author']}]**\n\n"
+            else:
+                formatted_content += f"**[{entry_time}]**\n\n"
+            
+            # Add the content
+            formatted_content += entry['content']
+    
     formatted_content += "\n\n---\n\n"
     formatted_content += "*This post was automatically generated from the official changelog.*"
     
     return formatted_content
+
+def generate_batch_id(entries):
+    """Generate a unique batch ID from the entry IDs."""
+    if len(entries) == 1:
+        return entries[0]['id']
+    
+    # For multiple entries, create a hash of all IDs
+    entry_ids = [e['id'] for e in entries]
+    entry_ids.sort()  # Ensure consistent ordering
+    
+    # Create a simple batch ID
+    batch_id = f"batch_{entry_ids[0]}_{entry_ids[-1]}"
+    return batch_id
 
 async def check_recent_reddit_posts(entry_id):
     """
@@ -281,12 +350,53 @@ async def manage_pinned_posts(reddit, current_post_id):
         logger.error(traceback.format_exc())
         return False
 
-async def post_changelog_to_reddit(entry, test_mode=False, force=False):
+async def get_entries_in_window(all_entries, target_entry, window_minutes=30):
     """
-    Post a single changelog entry to Reddit as a new pinned post with flair.
+    Get all entries within a time window of the target entry.
     
     Parameters:
-    - entry: The changelog entry to post
+    - all_entries: List of all changelog entries
+    - target_entry: The reference entry (usually the latest)
+    - window_minutes: Time window in minutes (default 30)
+    
+    Returns:
+    - List of entries within the window, sorted by timestamp
+    """
+    try:
+        # Parse the target entry's timestamp
+        target_time = datetime.fromisoformat(target_entry["timestamp"].replace("Z", "+00:00"))
+        window_start = target_time - timedelta(minutes=window_minutes)
+        
+        # Find all entries within the window
+        entries_in_window = []
+        
+        for entry in all_entries:
+            try:
+                entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+                
+                # Check if entry is within the window and not after the target
+                if window_start <= entry_time <= target_time:
+                    entries_in_window.append(entry)
+                    
+            except Exception as e:
+                logger.warning(f"Error parsing timestamp for entry {entry['id']}: {str(e)}")
+                continue
+        
+        # Sort by timestamp (oldest first) for chronological reading
+        entries_in_window.sort(key=lambda x: datetime.fromisoformat(x["timestamp"].replace("Z", "+00:00")))
+        
+        return entries_in_window
+        
+    except Exception as e:
+        logger.error(f"Error in get_entries_in_window: {str(e)}")
+        return [target_entry]  # Fallback to single entry
+
+async def post_changelog_batch_to_reddit(entries, test_mode=False, force=False):
+    """
+    Post a batch of changelog entries to Reddit as a single post.
+    
+    Parameters:
+    - entries: List of changelog entries to post (should be in chronological order)
     - test_mode: If True, simulates posting without making actual Reddit API calls
     - force: If True, bypasses duplicate checking and posts anyway
     
@@ -294,40 +404,49 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
     - (success, message): Tuple of success boolean and result message
     """
     
-    # Check if this entry has already been posted (unless force is True)
+    if not entries:
+        return False, "No entries provided"
+    
+    # Generate batch ID
+    batch_id = generate_batch_id(entries)
+    
+    # Check if this batch has already been posted (unless force is True)
     if not force:
         posts_data = get_posted_entries()
         for post in posts_data["posts"]:
-            if post["entry_id"] == entry["id"]:
-                logger.info(f"Entry {entry['id']} already posted to Reddit as {post['post_id']}")
+            # Check if this exact batch was posted
+            if post.get("batch_id") == batch_id:
+                logger.info(f"Batch {batch_id} already posted to Reddit as {post['post_id']}")
                 return True, f"Already posted: {post['url']} (use force=True to override)"
-
-    # Additional duplicate check by scanning recent Reddit posts
-    if not force and not test_mode:
-        duplicate_found = await check_recent_reddit_posts(entry["id"])
-        if duplicate_found:
-            logger.warning(f"Found duplicate post for entry {entry['id']} on Reddit but not in local tracking")
-            return False, f"Duplicate post detected on Reddit for entry {entry['id']} (use force=True to override)"
-
-    # Format the entry for logging/testing
-    formatted_body = format_changelog_for_reddit(
-        entry["content"],
-        entry["timestamp"],
-        entry["author"],
-        entry["id"]
-    )
+            
+            # Also check if any individual entries were already posted
+            for entry in entries:
+                if post["entry_id"] == entry["id"] and not post.get("batch_id"):
+                    logger.warning(f"Entry {entry['id']} was already posted individually")
+                    if not force:
+                        return False, f"Entry {entry['id']} was already posted individually (use force=True to override)"
     
-    # Create title from the first line of content or use a generic title
-    content_lines = entry["content"].split('\n')
-    title_text = next((line for line in content_lines if line.strip()), "Heroes' Journey Update")
+    # Format the batch for Reddit
+    formatted_body = format_batched_changelog_for_reddit(entries, batch_id)
     
-    # Truncate title if too long
-    title = f"Update: {title_text[:80]}" if len(title_text) > 80 else f"Update: {title_text}"
+    # Create title
+    if len(entries) == 1:
+        # Single entry - use existing logic
+        content_lines = entries[0]["content"].split('\n')
+        title_text = next((line for line in content_lines if line.strip()), "Heroes' Journey Update")
+        title = f"Update: {title_text[:80]}" if len(title_text) > 80 else f"Update: {title_text}"
+    else:
+        # Multiple entries - create a summary title
+        try:
+            date = datetime.fromisoformat(entries[-1]["timestamp"].replace("Z", "+00:00")).strftime("%B %d, %Y")
+            title = f"Heroes' Journey Updates - {date} ({len(entries)} changes)"
+        except:
+            title = f"Heroes' Journey Updates - Multiple Changes ({len(entries)} updates)"
     
     # If in test mode, just return the formatted content without posting
     if test_mode:
-        logger.info(f"TEST MODE: Would post entry {entry['id']} with title '{title}'")
-        return True, "Test successful - would post to Reddit (test mode enabled)"
+        logger.info(f"TEST MODE: Would post batch {batch_id} with {len(entries)} entries")
+        return True, f"Test successful - would post batch of {len(entries)} entries to Reddit (test mode enabled)"
     
     # Initialize Reddit API
     reddit = await initialize_reddit()
@@ -342,10 +461,10 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         # Create the post
         submission = await subreddit.submit(title, selftext=formatted_body)
         
-        # IMPORTANT: Load the submission to access its attributes
+        # Load the submission to access its attributes
         await submission.load()
         
-        logger.info(f"Created new post for entry {entry['id']}: {submission.id} - {submission.title}")
+        logger.info(f"Created new batch post for {len(entries)} entries: {submission.id} - {submission.title}")
         
         # Apply flair if possible
         flair_success, flair_name = await find_and_apply_flair(
@@ -367,9 +486,10 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         except Exception as e:
             logger.warning(f"Could not pin post {submission.id}: {str(e)}")
         
-        # Save post info with enhanced tracking
-        save_post_info(
-            entry["id"],
+        # Save post info with batch tracking
+        save_batch_post_info(
+            batch_id,
+            entries,
             submission.id,
             submission.title,
             submission.url,
@@ -392,9 +512,10 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         # Close the Reddit session
         await reddit.close()
         
-        return True, f"Created new post{status_message}: {submission.url}"
+        return True, f"Created batch post with {len(entries)} entries{status_message}: {submission.url}"
+        
     except Exception as e:
-        logger.error(f"Error creating Reddit post: {str(e)}")
+        logger.error(f"Error creating Reddit batch post: {str(e)}")
         logger.error(traceback.format_exc())
         return False, f"Error: {str(e)}"
     finally:
@@ -403,6 +524,74 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
             await reddit.close()
         except:
             pass
+
+def save_batch_post_info(batch_id, entries, post_id, title, url, flair_applied=None, force_used=False):
+    """Save information about a batched changelog post."""
+    posts_data = get_posted_entries()
+    
+    # Create list of entry IDs in the batch
+    entry_ids = [e["id"] for e in entries]
+    
+    # Add the new post
+    posts_data["posts"].append({
+        "batch_id": batch_id,
+        "entry_ids": entry_ids,
+        "entry_id": entries[-1]["id"],  # Keep for compatibility
+        "post_id": post_id,
+        "title": title,
+        "url": url,
+        "flair": flair_applied,
+        "posted_at": datetime.now().isoformat(),
+        "pinned": True,
+        "force_used": force_used,
+        "entry_count": len(entries)
+    })
+    
+    # Sort posts by posted_at to maintain chronological order
+    posts_data["posts"].sort(key=lambda x: x["posted_at"], reverse=True)
+    
+    try:
+        with open(REDDIT_POSTS_PATH, 'w') as f:
+            json.dump(posts_data, f, indent=2)
+        logger.info(f"Saved batch post info for {len(entries)} entries: {post_id}")
+    except Exception as e:
+        logger.error(f"Error saving batch post info: {str(e)}")
+
+async def post_changelog_to_reddit(entry, test_mode=False, force=False):
+    """
+    Post a changelog entry to Reddit. This now checks for nearby entries to batch.
+    
+    Parameters:
+    - entry: The changelog entry to post
+    - test_mode: If True, simulates posting without making actual Reddit API calls
+    - force: If True, bypasses duplicate checking and posts anyway
+    
+    Returns:
+    - (success, message): Tuple of success boolean and result message
+    """
+    
+    # Import the function to get all changelogs
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("Patcher_API", "/app/Patcher_API.py")
+    api_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api_module)
+    
+    # Get all changelog entries
+    try:
+        changelogs_response = await api_module.get_changelog(all=True)
+        all_entries = changelogs_response.get("changelogs", [])
+    except Exception as e:
+        logger.error(f"Error getting all changelogs: {str(e)}")
+        # Fallback to single entry
+        all_entries = [entry]
+    
+    # Find entries within the time window
+    entries_to_post = await get_entries_in_window(all_entries, entry, window_minutes=30)
+    
+    logger.info(f"Found {len(entries_to_post)} entries within 30-minute window of entry {entry['id']}")
+    
+    # Use the batch posting function
+    return await post_changelog_batch_to_reddit(entries_to_post, test_mode=test_mode, force=force)
 
 # Async helper functions for testing
 async def get_reddit_info():
