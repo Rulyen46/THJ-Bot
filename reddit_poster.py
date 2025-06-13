@@ -4,10 +4,10 @@ from datetime import datetime
 import json
 import traceback
 import asyncpraw
-import re
 
 # Ensure the logs directory exists before any logging
 os.makedirs('/app/logs', exist_ok=True)
+
 
 # Set up logging
 logging.basicConfig(
@@ -27,7 +27,7 @@ REDDIT_USERNAME = os.getenv('REDDIT_USERNAME')
 REDDIT_PASSWORD = os.getenv('REDDIT_PASSWORD')
 REDDIT_USER_AGENT = os.getenv('REDDIT_USER_AGENT', 'ChangelogPoster by /u/YourUsername')
 REDDIT_SUBREDDIT = os.getenv('REDDIT_SUBREDDIT')
-REDDIT_FLAIR_NAME = os.getenv('REDDIT_FLAIR_NAME', 'Change-Log')  # Default to 'Change-Log'
+REDDIT_FLAIR_NAME = os.getenv('REDDIT_FLAIR_NAME', 'Announcement')  # Default to 'Announcement'
 
 # Path to store Reddit posts information
 REDDIT_POSTS_PATH = "/app/reddit_posts.json"
@@ -108,108 +108,26 @@ def update_pin_status(post_id, pinned):
     except Exception as e:
         logger.error(f"Error updating pin status: {str(e)}")
 
-def clean_discord_mentions(content: str) -> str:
-    """
-    Remove Discord user mentions and clean up the content for Reddit posting.
-    Enhanced to catch more Discord mention patterns including alphanumeric usernames.
-    """
-    # Enhanced Discord user mentions - supports alphanumeric usernames and special characters
-    content = re.sub(r'<@[a-zA-Z0-9_.\-!]+[)]?>', '', content)
-    content = re.sub(r'<@&[a-zA-Z0-9_.\-!]+[)]?>', '', content)
-    content = re.sub(r'<#[a-zA-Z0-9_.\-!]+[)]?>', '', content)
-    
-    # Original numeric-only patterns (for backward compatibility)
-    content = re.sub(r'<@\d+>', '', content)
-    content = re.sub(r'<@&\d+>', '', content)
-    content = re.sub(r'<#\d+>', '', content)
-    
-    # Clean up any empty parentheses or brackets left by removed mentions
-    content = re.sub(r'\(\s*\)', '', content)
-    content = re.sub(r'\[\s*\]', '', content)
-    content = re.sub(r'<\s*>', '', content)
-    
-    # Clean up extra whitespace but preserve intentional formatting
-    content = re.sub(r' +', ' ', content)  # Multiple spaces -> single space
-    content = re.sub(r'\n +', '\n', content)  # Remove spaces at start of lines
-    content = re.sub(r' +\n', '\n', content)  # Remove spaces at end of lines
-    
-    return content.strip()
-
-def detect_markdown_formatting(content: str) -> dict:
-    """
-    Analyze content to detect if it's already well-formatted markdown.
-    
-    Returns dict with formatting analysis to determine processing approach.
-    """
-    analysis = {
-        'has_headers': False,
-        'has_lists': False,
-        'has_code_blocks': False,
-        'has_tables': False,
-        'has_emphasis': False,
-        'complexity_score': 0,
-        'needs_minimal_formatting': True
-    }
-    
-    # Check for markdown headers
-    if re.search(r'^#+\s', content, re.MULTILINE):
-        analysis['has_headers'] = True
-        analysis['complexity_score'] += 2
-    
-    # Check for lists
-    if re.search(r'^[\*\-\+]\s', content, re.MULTILINE) or re.search(r'^\d+\.\s', content, re.MULTILINE):
-        analysis['has_lists'] = True
-        analysis['complexity_score'] += 1
-    
-    # Check for code blocks
-    if '```' in content or re.search(r'`[^`]+`', content):
-        analysis['has_code_blocks'] = True
-        analysis['complexity_score'] += 2
-    
-    # Check for tables
-    if '|' in content and re.search(r'\|.*\|', content):
-        analysis['has_tables'] = True
-        analysis['complexity_score'] += 2
-    
-    # Check for emphasis
-    if re.search(r'\*\*[^*]+\*\*', content) or re.search(r'\*[^*]+\*', content):
-        analysis['has_emphasis'] = True
-        analysis['complexity_score'] += 1
-    
-    # If content is already well-formatted, use minimal processing
-    analysis['needs_minimal_formatting'] = analysis['complexity_score'] >= 3
-    
-    return analysis
-
 def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
-    """
-    Format a changelog entry for Reddit with enhanced Discord mention handling.
-    Keeps the simple, clean structure while adding necessary content cleaning.
-    """
+    """Format a changelog entry for Reddit."""
     try:
-        # Convert timestamp to a more readable format
+        # Convert timestamp to datetime if it's a string
         if isinstance(timestamp, str):
             try:
-                # Try to parse ISO format and make it more readable
-                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                formatted_date = dt.strftime("%B %d, %Y at %I:%M %p UTC")
+                formatted_date = datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M:%S")
             except ValueError:
                 formatted_date = timestamp  # Keep it as is if parsing fails
         else:
-            formatted_date = timestamp.strftime("%B %d, %Y at %I:%M %p UTC")
+            formatted_date = timestamp.strftime("%Y-%m-%d %H:%M:%S")
     except:
         formatted_date = str(timestamp)
     
-    # Clean Discord mentions from the content
-    cleaned_content = clean_discord_mentions(message_content)
-    
-    # Build the formatted content with clean structure
     formatted_content = f"# Heroes' Journey Changelog Update\n\n"
     formatted_content += f"**Author:** {author}\n"
     formatted_content += f"**Date:** {formatted_date}\n"
-    formatted_content += f"**Entry ID:** `{entry_id}`\n\n"
+    formatted_content += f"**Entry ID:** {entry_id}\n\n"
     formatted_content += f"---\n\n"
-    formatted_content += cleaned_content
+    formatted_content += message_content
     formatted_content += "\n\n---\n\n"
     formatted_content += "*This post was automatically generated from the official changelog.*"
     
@@ -288,9 +206,9 @@ async def find_and_apply_flair(reddit, submission, subreddit, preferred_flair_na
                     logger.info(f"Found exact match for preferred flair '{preferred_flair_name}'")
                     break
         
-        # If we didn't find the preferred flair, look for changelog/announcement flairs
+        # If we didn't find the preferred flair, look for announcement/changelog flairs
         if not selected_flair:
-            flair_keywords = ["change-log", "changelog", "change log", "announcement", "update", "important", "info"]
+            flair_keywords = ["announcement", "changelog", "update", "important", "info"]
             
             for keyword in flair_keywords:
                 if selected_flair:
@@ -403,8 +321,7 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
     content_lines = entry["content"].split('\n')
     title_text = next((line for line in content_lines if line.strip()), "Heroes' Journey Update")
     
-    # Clean the title - simple format without emoji
-    title_text = clean_discord_mentions(title_text)
+    # Truncate title if too long
     title = f"Update: {title_text[:80]}" if len(title_text) > 80 else f"Update: {title_text}"
     
     # If in test mode, just return the formatted content without posting
@@ -422,12 +339,8 @@ async def post_changelog_to_reddit(entry, test_mode=False, force=False):
         # Get the subreddit
         subreddit = await reddit.subreddit(REDDIT_SUBREDDIT)
         
-        # Create the post with explicit parameters
-        submission = await subreddit.submit(
-            title=title, 
-            selftext=formatted_body,
-            send_replies=True  # Enable replies
-        )
+        # Create the post
+        submission = await subreddit.submit(title, selftext=formatted_body)
         
         # IMPORTANT: Load the submission to access its attributes
         await submission.load()

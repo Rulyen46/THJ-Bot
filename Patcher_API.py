@@ -2,7 +2,7 @@ import os
 import discord
 from fastapi import FastAPI, HTTPException, Security, Depends, Request, Response
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime
 import asyncio
 import uvicorn
 from typing import Optional, Callable
@@ -1116,419 +1116,120 @@ def import_reddit_poster():
         logger.error(f"Error importing Reddit poster: {str(e)}")
         logger.error(traceback.format_exc())
         return None
-    
-def combine_entries_for_reddit_api(entries):
-    """Combine multiple changelog entries into a single Reddit post for API use"""
-    if not entries:
-        return None
-        
-    # Sort by timestamp to ensure correct order
-    entries.sort(key=lambda x: x['timestamp'])
-    
-    # Use the first entry as the base
-    combined = entries[0].copy()
-    
-    # Combine all content and clean Discord mentions
-    combined_content = []
-    for entry in entries:
-        content = entry['content'].strip()
-        # Clean Discord mentions from each entry
-        cleaned_content = clean_discord_mentions(content)
-        combined_content.append(cleaned_content)
-    
-    # Join with double newlines for clean separation
-    combined['content'] = '\n\n'.join(combined_content)
-    
-    # Update the ID to reflect it's a combined post
-    if len(entries) > 1:
-        entry_ids = [e['id'] for e in entries]
-        combined['id'] = f"combined_{min(entry_ids)}_{max(entry_ids)}"
-    
-    return combined
-
-def combine_recent_entries(messages, max_age_minutes=30):
-    """
-    Combine recent entries from the same author into batches
-    Enhanced version that handles bulk operations better
-    """
-    if not messages:
-        return []
-    
-    # Sort by timestamp (oldest first for bulk operations)
-    messages.sort(key=lambda x: x['timestamp'])
-    
-    batches = []
-    current_batch = None
-    
-    for message in messages:
-        try:
-            # Parse timestamp
-            msg_time = datetime.fromisoformat(message['timestamp'].replace('Z', '+00:00').replace('+00:00', ''))
-            author = message.get('author', 'Unknown')
-            
-            # Check if this message can be batched with current batch
-            can_batch = False
-            if current_batch and current_batch['author'] == author:
-                # Check time difference with the last message in current batch
-                last_msg_time = datetime.fromisoformat(
-                    current_batch['entries'][-1]['timestamp'].replace('Z', '+00:00').replace('+00:00', '')
-                )
-                time_diff = (msg_time - last_msg_time).total_seconds()
-                
-                if time_diff <= (max_age_minutes * 60):
-                    can_batch = True
-            
-            if can_batch:
-                # Add to current batch
-                current_batch['entries'].append(message)
-                current_batch['latest_time'] = msg_time
-            else:
-                # Finalize current batch if it exists
-                if current_batch:
-                    batches.append(current_batch)
-                
-                # Start new batch
-                current_batch = {
-                    'author': author,
-                    'entries': [message],
-                    'earliest_time': msg_time,
-                    'latest_time': msg_time
-                }
-        
-        except Exception as e:
-            logger.error(f"Error processing message for batching: {e}")
-            # If error, treat as separate batch
-            if current_batch:
-                batches.append(current_batch)
-            current_batch = {
-                'author': message.get('author', 'Unknown'),
-                'entries': [message],
-                'earliest_time': datetime.now(),
-                'latest_time': datetime.now()
-            }
-    
-    # Don't forget the last batch
-    if current_batch:
-        batches.append(current_batch)
-    
-    # Convert batches to combined entries
-    combined_entries = []
-    for batch in batches:
-        entries = batch['entries']
-        
-        if len(entries) == 1:
-            # Single entry, no combination needed
-            combined_entries.append(entries[0])
-        else:
-            # Combine multiple entries
-            logger.info(f"Combining {len(entries)} entries from {batch['author']}")
-            
-            # Use the first entry as base
-            combined = entries[0].copy()
-            
-            # Combine content
-            combined_content = []
-            for entry in entries:
-                content = entry['content'].strip()
-                combined_content.append(content)
-            
-            combined['content'] = '\n\n'.join(combined_content)
-            
-            # Create combined ID
-            entry_ids = [e['id'] for e in entries]
-            combined['id'] = f"combined_{min(entry_ids)}_{max(entry_ids)}"
-            
-            # Use the latest timestamp
-            combined['timestamp'] = entries[-1]['timestamp']
-            
-            combined_entries.append(combined)
-            
-            logger.info(f"Created combined entry: {combined['id']}")
-    
-    return combined_entries
-
-def clean_discord_mentions(content: str) -> str:
-    """
-    Remove Discord user mentions and clean up the content for Reddit posting.
-    """
-    import re
-    
-    # Remove Discord user mentions <@userid>
-    content = re.sub(r'<@\d+>', '', content)
-    
-    # Remove Discord role mentions <@&roleid> 
-    content = re.sub(r'<@&\d+>', '', content)
-    
-    # Remove Discord channel mentions <#channelid>
-    content = re.sub(r'<#\d+>', '', content)
-    
-    # Clean up any double spaces or hanging parentheses left by removed mentions
-    content = re.sub(r'\(\s*\)', '', content)  # Remove empty parentheses
-    content = re.sub(r'\s+', ' ', content)     # Collapse multiple spaces
-    content = content.strip()                   # Remove leading/trailing whitespace
-    
-    return content
 
 
 @app.post("/reddit/post-changelog", dependencies=[Depends(verify_token)])
-async def post_to_reddit(
-    entry_id: Optional[str] = None, 
-    force: bool = False,
-    use_batching: bool = True,
-    batch_delay: int = 60  # seconds to wait for batching
-):
+async def post_to_reddit(entry_id: Optional[str] = None, force: bool = False):
     """
-    Post a changelog entry to Reddit with optional batching.
-    Always falls back to posting single entry if batching doesn't apply.
-    """
-    try:
-        logger.info(f"\n=== Posting to Reddit ===")
-        logger.info(f"Entry ID: {entry_id if entry_id else 'Latest'}")
-        logger.info(f"Force mode: {force}")
-        logger.info(f"Use batching: {use_batching}")
-
-        # Get the entry to post
-        if entry_id:
-            changelogs = await get_changelog(all=True)
-            entry = next((e for e in changelogs["changelogs"] if e["id"] == entry_id), None)
-            if not entry:
-                raise HTTPException(status_code=404, detail=f"Changelog entry {entry_id} not found")
-        else:
-            changelogs = await get_changelog(all=False)
-            if not changelogs["changelogs"]:
-                raise HTTPException(status_code=404, detail="No changelog entries found")
-            entry = changelogs["changelogs"][0]
-
-        reddit_poster = import_reddit_poster()
-        if not reddit_poster:
-            raise HTTPException(status_code=500, detail="Failed to import Reddit poster module")
-
-        # Initialize variables for potential batching
-        should_batch = False
-        batch_entries = []
-        batch_info = {}
-
-        # Try batching if enabled and not forced
-        if use_batching and not force:
-            try:
-                logger.info(f"Attempting to batch entries for author: {entry['author']}")
-                
-                # Get all entries from same author
-                author = entry["author"]
-                all_changelogs = await get_changelog(all=True)
-                author_entries = [e for e in all_changelogs["changelogs"] if e["author"] == author]
-                
-                # Check if any of these are already posted
-                posted_entries = reddit_poster.get_posted_entries()
-                posted_ids = [post["entry_id"] for post in posted_entries.get("posts", [])]
-                
-                # Filter to only unpublished entries
-                unpublished_entries = [e for e in author_entries if e["id"] not in posted_ids]
-                
-                logger.info(f"Found {len(unpublished_entries)} unpublished entries from {author}")
-                
-                if len(unpublished_entries) > 1:
-                    logger.info("=== BATCHING DEBUG INFO ===")
-                    
-                    # Parse timestamps more robustly and add to entries for sorting
-                    parsed_entries = []
-                    for e in unpublished_entries:
-                        try:
-                            # Handle multiple timestamp formats more robustly
-                            timestamp_str = e['timestamp']
-                            if timestamp_str.endswith('Z'):
-                                timestamp_str = timestamp_str[:-1] + '+00:00'
-                            elif not timestamp_str.endswith('+00:00') and '+' not in timestamp_str[-6:]:
-                                # If no timezone info, assume UTC
-                                timestamp_str = timestamp_str + '+00:00'
-                            
-                            parsed_time = datetime.fromisoformat(timestamp_str)
-                            parsed_entries.append({
-                                'entry': e,
-                                'parsed_time': parsed_time,
-                                'original_timestamp': e['timestamp']
-                            })
-                            logger.info(f"Parsed entry {e['id']}: {e['timestamp']} -> {parsed_time}")
-                        except Exception as parse_error:
-                            logger.error(f"Failed to parse timestamp for entry {e['id']}: {e['timestamp']} - Error: {parse_error}")
-                            # Skip entries with unparseable timestamps
-                            continue
-                        
-                    if len(parsed_entries) > 1:
-                        # Sort by parsed timestamp (newest first)
-                        parsed_entries.sort(key=lambda x: x['parsed_time'], reverse=True)
-                        
-                        # Get the most recent (newest) entry as the batch reference point
-                        most_recent_parsed = parsed_entries[0]
-                        most_recent_time = most_recent_parsed['parsed_time']
-                        batch_start_time = most_recent_time - timedelta(minutes=30)  # 30 minutes BEFORE most recent
-                        
-                        logger.info(f"BATCH WINDOW CALCULATION (working backwards):")
-                        logger.info(f"  Most recent entry: {most_recent_parsed['entry']['id']} at {most_recent_time}")
-                        logger.info(f"  Batch start time: {batch_start_time} (30 minutes before most recent)")
-                        logger.info(f"  Batch end time: {most_recent_time}")
-                        logger.info(f"  Window: 30 minutes before most recent entry")
-                        
-                        # Find all entries within the 30-minute window BEFORE the most recent entry
-                        potential_batch = []
-                        for parsed in parsed_entries:
-                            entry_time = parsed['parsed_time']
-                            time_diff = (most_recent_time - entry_time).total_seconds() / 60  # Minutes before most recent
-                            
-                            if entry_time >= batch_start_time:  # Within the 30-minute lookback window
-                                potential_batch.append(parsed['entry'])
-                                logger.info(f"  ✅ Including entry {parsed['entry']['id']} - {time_diff:.1f} minutes before most recent")
-                            else:
-                                logger.info(f"  ❌ Excluding entry {parsed['entry']['id']} - {time_diff:.1f} minutes before most recent (outside 30min window)")
-                        
-                        # Sort the batch entries by timestamp (oldest first for posting order)
-                        potential_batch.sort(key=lambda x: datetime.fromisoformat(
-                            x['timestamp'].replace('Z', '+00:00') if x['timestamp'].endswith('Z') 
-                            else x['timestamp'] + '+00:00' if '+' not in x['timestamp'][-6:] 
-                            else x['timestamp']
-                        ))
-                        
-                        logger.info("=== END BATCHING DEBUG ===")
-                        
-                        if len(potential_batch) > 1:
-                            logger.info(f"Batching conditions met: {len(potential_batch)} entries within 30-minute lookback window")
-                            should_batch = True
-                            batch_entries = potential_batch
-                            batch_info = {
-                                "reference_time": most_recent_time.isoformat(),
-                                "batch_start_time": batch_start_time.isoformat(),
-                                "batch_end_time": most_recent_time.isoformat(),
-                                "window_minutes": 30,
-                                "entry_count": len(potential_batch),
-                                "batched_entry_ids": [e["id"] for e in potential_batch]
-                            }
-                        else:
-                            logger.info("Only one entry in batch window after parsing, will post single entry")
-                    else:
-                        logger.info("Not enough entries with valid timestamps for batching")
-                else:
-                    logger.info("Not enough unpublished entries for batching, will post single entry")
-                    
-            except Exception as e:
-                logger.error(f"Error during batching attempt: {str(e)}")
-                logger.error(traceback.format_exc())
-                logger.info("Batching failed, falling back to single entry posting")
-                should_batch = False
-
-        # Execute batching or fall back to single entry
-        if should_batch and batch_entries:
-            try:
-                logger.info(f"Executing batch post for {len(batch_entries)} entries")
-                
-                # Combine entries for batching
-                combined_entry = combine_entries_for_reddit_api(batch_entries)
-                success, message = await reddit_poster.post_changelog_to_reddit(combined_entry, force=force)
-                
-                if success:
-                    logger.info(f"✅ Successfully posted batched entry: {combined_entry['id']}")
-                    
-                    # Get the updated post info to return
-                    posted_entries = reddit_poster.get_posted_entries()
-                    latest_post = None
-                    for post in posted_entries.get("posts", []):
-                        if post["entry_id"] == combined_entry["id"]:
-                            latest_post = post
-                            break
-                    
-                    response = {
-                        "status": "success",
-                        "message": message,
-                        "batched": True,
-                        "combined_entry_id": combined_entry["id"],
-                        "batch_info": batch_info
-                    }
-                    
-                    if latest_post:
-                        response["post_details"] = {
-                            "post_id": latest_post["post_id"],
-                            "url": latest_post["url"],
-                            "posted_at": latest_post["posted_at"],
-                            "flair": latest_post.get("flair", "None")
-                        }
-                    
-                    return response
-                else:
-                    logger.error(f"❌ Batch posting failed: {message}")
-                    logger.info("Falling back to single entry posting")
-                    
-            except Exception as e:
-                logger.error(f"Error during batch posting: {str(e)}")
-                logger.info("Batch posting failed, falling back to single entry posting")
-
-        # FALLBACK: Post single entry
-        # This executes if:
-        # - Batching is disabled (use_batching=False)
-        # - Force mode is enabled (force=True)
-        # - Not enough entries for batching
-        # - Batching failed for any reason
-        # - Entry is outside the 30-minute batch window
-        
-        logger.info(f"Posting single entry: {entry['id']}")
-        
-        try:
-            success, message = await reddit_poster.post_changelog_to_reddit(entry, force=force)
-            
-            if success:
-                logger.info(f"✅ Successfully posted single entry: {entry['id']}")
-                
-                # Get the updated post info to return
-                posted_entries = reddit_poster.get_posted_entries()
-                latest_post = None
-                for post in posted_entries.get("posts", []):
-                    if post["entry_id"] == entry["id"]:
-                        latest_post = post
-                        break
-                
-                response = {
-                    "status": "success", 
-                    "message": message,
-                    "batched": False,
-                    "entry_id": entry["id"]
-                }
-                
-                if latest_post:
-                    response["post_details"] = {
-                        "post_id": latest_post["post_id"],
-                        "url": latest_post["url"],
-                        "posted_at": latest_post["posted_at"],
-                        "flair": latest_post.get("flair", "None")
-                    }
-                
-                return response
-            else:
-                logger.error(f"❌ Single entry posting failed: {message}")
-                raise HTTPException(status_code=500, detail=f"Failed to post entry: {message}")
-                
-        except Exception as e:
-            logger.error(f"Error during single entry posting: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to post single entry: {str(e)}")
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in post_to_reddit: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/reddit/post-all-entries", dependencies=[Depends(verify_token)])
-async def post_all_entries_to_reddit(batch: bool = True):
-    """
-    Post all unpublished changelog entries to Reddit with optional batching.
+    Post a changelog entry to Reddit with duplicate checking.
+    If no entry_id is provided, posts the latest entry.
     
     Parameters:
-    - batch: If True, combines related entries before posting (default: True)
+    - entry_id: Specific entry ID to post (optional)
+    - force: If True, bypasses duplicate checking (optional)
     
     Requires X-Patcher-Token header for authentication.
     """
     try:
+        logger.info("\n=== Posting to Reddit ===")
+        logger.info(f"Entry ID: {entry_id if entry_id else 'Latest'}")
+        logger.info(f"Force mode: {force}")
+
+        # Import the Reddit poster
+        reddit_poster = import_reddit_poster()
+        if not reddit_poster:
+            raise HTTPException(
+                status_code=500, detail="Failed to import Reddit poster module")
+
+        # Get the entry to post
+        if entry_id:
+            # Get specific entry
+            changelogs = await get_changelog(all=True)
+            entry = next(
+                (e for e in changelogs["changelogs"] if e["id"] == entry_id), None)
+            if not entry:
+                raise HTTPException(
+                    status_code=404, detail=f"Changelog entry {entry_id} not found")
+        else:
+            # Get latest entry
+            changelogs = await get_changelog(all=False)
+            if not changelogs["changelogs"]:
+                raise HTTPException(
+                    status_code=404, detail="No changelog entries found")
+            entry = changelogs["changelogs"][0]
+
+        logger.info(f"Processing entry: {entry['id']} by {entry['author']}")
+
+        # Check for duplicates at API level (unless force is True)
+        if not force:
+            posted_entries = reddit_poster.get_posted_entries()
+            existing_post = None
+            
+            for post in posted_entries.get("posts", []):
+                if post["entry_id"] == entry["id"]:
+                    existing_post = post
+                    break
+            
+            if existing_post:
+                logger.info(f"Entry {entry['id']} already posted to Reddit")
+                return {
+                    "status": "duplicate",
+                    "message": f"Entry {entry['id']} has already been posted to Reddit",
+                    "existing_post": {
+                        "post_id": existing_post["post_id"],
+                        "url": existing_post["url"],
+                        "posted_at": existing_post["posted_at"],
+                        "flair": existing_post.get("flair", "None")
+                    },
+                    "entry_id": entry["id"]
+                }
+
+        # Post to Reddit using async function
+        success, message = await reddit_poster.post_changelog_to_reddit(entry, force=force)
+
+        if success:
+            # Get the updated post info to return
+            posted_entries = reddit_poster.get_posted_entries()
+            latest_post = None
+            for post in posted_entries.get("posts", []):
+                if post["entry_id"] == entry["id"]:
+                    latest_post = post
+                    break
+            
+            response = {
+                "status": "success", 
+                "message": message,
+                "entry_id": entry["id"]
+            }
+            
+            if latest_post:
+                response["post_details"] = {
+                    "post_id": latest_post["post_id"],
+                    "url": latest_post["url"],
+                    "posted_at": latest_post["posted_at"],
+                    "flair": latest_post.get("flair", "None")
+                }
+            
+            return response
+        else:
+            raise HTTPException(status_code=500, detail=message)
+            
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Error posting to Reddit: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/reddit/post-all-entries", dependencies=[Depends(verify_token)])
+async def post_all_entries_to_reddit():
+    """
+    Post all unpublished changelog entries to Reddit.
+    Requires X-Patcher-Token header for authentication.
+    """
+    try:
         logger.info("\n=== Posting All Unpublished Entries to Reddit ===")
-        logger.info(f"Batch mode: {batch}")
 
         # Import the Reddit poster
         reddit_poster = import_reddit_poster()
@@ -1544,67 +1245,36 @@ async def post_all_entries_to_reddit(batch: bool = True):
 
         # Get already posted entries
         posted_entries = reddit_poster.get_posted_entries()
-        posted_ids = [post["entry_id"] for post in posted_entries.get("posts", [])]
+        posted_ids = [post["entry_id"]
+                      for post in posted_entries.get("posts", [])]
 
         # Filter out already posted entries
         to_post = [entry for entry in changelogs["changelogs"]
-                   if entry["id"] not in posted_ids and not entry["id"].startswith("combined_")]
+                   if entry["id"] not in posted_ids]
 
         if not to_post:
             return {"status": "success", "message": "All entries have already been posted"}
 
-        logger.info(f"Found {len(to_post)} unpublished entries")
-
-        if batch:
-            # Batch related entries before posting
-            logger.info("Batching related entries...")
-            batched_entries = combine_recent_entries(to_post, max_age_minutes=60)  # Longer window for bulk posting
-            entries_to_post = batched_entries
-            logger.info(f"Batched into {len(batched_entries)} posts")
-        else:
-            entries_to_post = to_post
-
-        # Post each entry/batch
+        # Post each entry using async function
         results = []
-        for entry in entries_to_post:
-            try:
-                success, message = await reddit_poster.post_changelog_to_reddit(entry)
-                results.append({
-                    "entry_id": entry["id"],
-                    "success": success,
-                    "message": message,
-                    "batched": "combined_" in entry["id"]
-                })
+        for entry in to_post:
+            success, message = await reddit_poster.post_changelog_to_reddit(entry)
+            results.append({
+                "entry_id": entry["id"],
+                "success": success,
+                "message": message
+            })
 
-                if success:
-                    logger.info(f"✅ Posted entry {entry['id']}")
-                else:
-                    logger.error(f"❌ Failed to post entry {entry['id']}: {message}")
-
-                # Add delay to avoid hitting Reddit rate limits
-                await asyncio.sleep(3)
-                
-            except Exception as e:
-                logger.error(f"Error posting entry {entry['id']}: {str(e)}")
-                results.append({
-                    "entry_id": entry["id"],
-                    "success": False,
-                    "message": str(e),
-                    "batched": "combined_" in entry["id"]
-                })
-
-        successful_posts = len([r for r in results if r['success']])
-        total_attempts = len(results)
+            # Add a small delay to avoid hitting Reddit rate limits
+            await asyncio.sleep(2)
 
         return {
             "status": "success",
-            "message": f"Posted {successful_posts} of {total_attempts} entries/batches",
-            "batch_mode": batch,
+            "message": f"Posted {len([r for r in results if r['success']])} of {len(to_post)} entries",
             "results": results
         }
-        
     except Exception as e:
-        logger.error(f"Error in post_all_entries_to_reddit: {str(e)}")
+        logger.error(f"Error posting to Reddit: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 async def check_recent_reddit_posts(entry_id):

@@ -10,20 +10,12 @@ import re
 import traceback
 import aiohttp
 import importlib.util
-import asyncio
-from datetime import datetime, timedelta
-from collections import defaultdict
 
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHANGELOG_CHANNEL_ID = int(os.getenv('CHANGELOG_CHANNEL_ID'))
 EXP_BOOST_CHANNEL_ID = os.getenv('EXP_BOOST_CHANNEL_ID')
-
-# Variables for Reddit posts
-pending_reddit_posts = defaultdict(list)  # author -> list of entries
-reddit_post_timers = {}  # author -> timer task
-
 
 # Convert EXP_BOOST_CHANNEL_ID to int if it exists
 if EXP_BOOST_CHANNEL_ID:
@@ -273,71 +265,45 @@ async def on_guild_channel_update(before, after):
         logger.info(f"EXP boost channel title changed from '{before.name}' to '{after.name}'")
         await update_server_status_from_channel(after)
 
-    # Debug log for ALL messages
-    logger.info(f"MESSAGE RECEIVED - Channel: {message.channel.id}, Author: {message.author}, Content: {message.content[:50]}...")
-
 @client.event
 async def on_message(message):
     # Debug log for ALL messages
     logger.info(f"MESSAGE RECEIVED - Channel: {message.channel.id}, Author: {message.author}, Content: {message.content[:50]}...")
-    
+
+    # Specific handler for changelog channel
     if message.channel.id == CHANGELOG_CHANNEL_ID:
-        logger.info(f"New message in changelog channel: {message.content}")
+        logger.info(f"CHANGELOG MESSAGE DETECTED - Content: {message.content}")
         
         # Update the changelog.md file with the new message
         try:
             await update_changelog_file(message)
             logger.info("Successfully updated changelog.md file")
 
-            # Create entry object for the new message
-            entry = {
-                "id": str(message.id),
-                "author": message.author.display_name,
-                "timestamp": message.created_at.isoformat(),
-                "content": message.content
-            }
+            
+            # Post to Reddit
+            try:
+                reddit_poster = import_reddit_poster()
+                if reddit_poster:
+                    # Create entry object for the new message
+                    entry = {
+                        "id": str(message.id),
+                        "author": message.author.display_name,
+                        "timestamp": message.created_at.isoformat(),
+                        "content": message.content
+                    }
 
-            # Add debug logging
-            logger.info(f"Processing message from {entry['author']} at {entry['timestamp']}")
-
-            # Add to pending Reddit posts for batching
-            author = message.author.display_name
-            pending_reddit_posts[author].append(entry)
-            
-            # Cancel existing timer for this author
-            if author in reddit_post_timers:
-                logger.info(f"Cancelling existing timer for {author}")
-                reddit_post_timers[author].cancel()
-            
-            # Filter out old entries (older than max age)
-            cutoff_time = datetime.now() - timedelta(seconds=REDDIT_BATCH_MAX_AGE)
-            old_count = len(pending_reddit_posts[author])
-            pending_reddit_posts[author] = [
-                e for e in pending_reddit_posts[author] 
-                if datetime.fromisoformat(e['timestamp'].replace('Z', '+00:00').replace('+00:00', '')) > cutoff_time
-            ]
-            new_count = len(pending_reddit_posts[author])
-            
-            if old_count != new_count:
-                logger.info(f"Filtered out {old_count - new_count} old entries for {author}")
-            
-            logger.info(f"Batching {new_count} entries for {author}, starting {REDDIT_BATCH_DELAY}s timer")
-            
-            # Create async task for the delay and batch processing
-            async def delayed_batch_process():
-                try:
-                    await asyncio.sleep(REDDIT_BATCH_DELAY)
-                    await process_reddit_batch(author)
-                except asyncio.CancelledError:
-                    logger.info(f"Reddit batch timer cancelled for {author} (new message received)")
-                except Exception as e:
-                    logger.error(f"Error in delayed batch process for {author}: {str(e)}")
-            
-            # Start the timer task
-            reddit_post_timers[author] = asyncio.create_task(delayed_batch_process())
-                
+                    
+                    # Post to Reddit as a new post
+                    success, result_message = reddit_poster.post_changelog_to_reddit(entry)
+                    if success:
+                        logger.info(f"Successfully posted to Reddit: {result_message}")
+                    else:
+                        logger.error(f"Failed to post to Reddit: {result_message}")
+            except Exception as e:
+                logger.error(f"Error posting to Reddit: {str(e)}")
+                logger.error(traceback.format_exc())
         except Exception as e:
-            logger.error(f"Error processing changelog message: {str(e)}")
+            logger.error(f"Error updating changelog.md: {str(e)}")
             logger.error(traceback.format_exc())
 
 async def update_server_status_from_channel(channel):
@@ -532,73 +498,6 @@ def import_reddit_poster():
         logger.error(f"Error importing Reddit poster: {str(e)}")
         logger.error(traceback.format_exc())
         return None
-    
-async def process_reddit_batch(author):
-    """Process all pending Reddit posts for an author after delay"""
-    try:
-        logger.info(f"Processing Reddit batch for author: {author}")
-        
-        if author not in pending_reddit_posts or not pending_reddit_posts[author]:
-            logger.info(f"No pending posts for {author}")
-            return
-            
-        # Get all entries for this author
-        entries = pending_reddit_posts[author].copy()
-        
-        # Clear the pending entries
-        del pending_reddit_posts[author]
-        if author in reddit_post_timers:
-            del reddit_post_timers[author]
-        
-        # Sort entries by timestamp to ensure correct order
-        entries.sort(key=lambda x: x['timestamp'])
-        
-        logger.info(f"Posting {len(entries)} combined entries to Reddit for {author}")
-        
-        # Import Reddit poster
-        reddit_poster = import_reddit_poster()
-        if not reddit_poster:
-            logger.error("Could not import Reddit poster")
-            return
-            
-        # Combine all entries into one Reddit post
-        combined_entry = combine_entries_for_reddit(entries)
-        
-        # Post to Reddit
-        success, result_message = await reddit_poster.post_changelog_to_reddit(combined_entry)
-        if success:
-            logger.info(f"Successfully posted combined Reddit update: {result_message}")
-        else:
-            logger.error(f"Failed to post combined Reddit update: {result_message}")
-            
-    except Exception as e:
-        logger.error(f"Error processing Reddit batch for {author}: {str(e)}")
-        logger.error(traceback.format_exc())
-
-def combine_entries_for_reddit(entries):
-    """Combine multiple changelog entries into a single Reddit post"""
-    if not entries:
-        return None
-        
-    # Use the first entry as the base
-    combined = entries[0].copy()
-    
-    # Combine all content seamlessly
-    combined_content = []
-    
-    for entry in entries:
-        content = entry['content'].strip()
-        combined_content.append(content)
-    
-    # Join with double newlines for clean separation
-    combined['content'] = '\n\n'.join(combined_content)
-    
-    # Update the ID to reflect it's a combined post
-    if len(entries) > 1:
-        entry_ids = [e['id'] for e in entries]
-        combined['id'] = f"combined_{min(entry_ids)}_{max(entry_ids)}"
-    
-    return combined
 
 # Run the client with proper reconnection handling
 if __name__ == "__main__":
