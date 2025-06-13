@@ -111,22 +111,24 @@ def update_pin_status(post_id, pinned):
 def clean_discord_mentions(content: str) -> str:
     """
     Remove Discord user mentions and clean up the content for Reddit posting.
-    Preserve all other markdown formatting.
+    Enhanced to catch more Discord mention patterns including alphanumeric usernames.
     """
-    import re
+    # Enhanced Discord user mentions - supports alphanumeric usernames and special characters
+    content = re.sub(r'<@[a-zA-Z0-9_.\-!]+[)]?>', '', content)
+    content = re.sub(r'<@&[a-zA-Z0-9_.\-!]+[)]?>', '', content)
+    content = re.sub(r'<#[a-zA-Z0-9_.\-!]+[)]?>', '', content)
     
-    # Only remove Discord-specific mentions, preserve everything else
-    # Remove Discord user mentions <@userid>
+    # Original numeric-only patterns (for backward compatibility)
     content = re.sub(r'<@\d+>', '', content)
-    
-    # Remove Discord role mentions <@&roleid> 
     content = re.sub(r'<@&\d+>', '', content)
-    
-    # Remove Discord channel mentions <#channelid>
     content = re.sub(r'<#\d+>', '', content)
     
-    # Clean up extra whitespace left by removed mentions
-    # But preserve intentional line breaks and formatting
+    # Clean up any empty parentheses or brackets left by removed mentions
+    content = re.sub(r'\(\s*\)', '', content)
+    content = re.sub(r'\[\s*\]', '', content)
+    content = re.sub(r'<\s*>', '', content)
+    
+    # Clean up extra whitespace but preserve intentional formatting
     content = re.sub(r' +', ' ', content)  # Multiple spaces -> single space
     content = re.sub(r'\n +', '\n', content)  # Remove spaces at start of lines
     content = re.sub(r' +\n', '\n', content)  # Remove spaces at end of lines
@@ -181,64 +183,37 @@ def detect_markdown_formatting(content: str) -> dict:
 
 def format_changelog_for_reddit(message_content, timestamp, author, entry_id):
     """
-    Smart formatter that adapts based on existing markdown formatting.
-    If content is already well-formatted from .md file, it does minimal processing.
+    Format a changelog entry for Reddit with enhanced Discord mention handling.
+    Keeps the simple, clean structure while adding necessary content cleaning.
     """
     try:
-        # Convert timestamp
+        # Convert timestamp to a more readable format
         if isinstance(timestamp, str):
             try:
-                formatted_date = datetime.fromisoformat(timestamp.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S")
+                # Try to parse ISO format and make it more readable
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                formatted_date = dt.strftime("%B %d, %Y at %I:%M %p UTC")
             except ValueError:
-                formatted_date = timestamp
+                formatted_date = timestamp  # Keep it as is if parsing fails
         else:
-            formatted_date = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            formatted_date = timestamp.strftime("%B %d, %Y at %I:%M %p UTC")
     except:
         formatted_date = str(timestamp)
     
-    # Clean Discord mentions
+    # Clean Discord mentions from the content
     cleaned_content = clean_discord_mentions(message_content)
     
-    # Analyze the content to determine formatting approach
-    analysis = detect_markdown_formatting(cleaned_content)
+    # Build the formatted content with clean structure
+    formatted_content = f"# Heroes' Journey Changelog Update\n\n"
+    formatted_content += f"**Author:** {author}\n"
+    formatted_content += f"**Date:** {formatted_date}\n"
+    formatted_content += f"**Entry ID:** `{entry_id}`\n\n"
+    formatted_content += f"---\n\n"
+    formatted_content += cleaned_content
+    formatted_content += "\n\n---\n\n"
+    formatted_content += "*This post was automatically generated from the official changelog.*"
     
-    formatted_parts = []
-    
-    if analysis['needs_minimal_formatting']:
-        # Content is already well-formatted from .md file - use minimal approach
-        logger.info(f"Using minimal formatting for entry {entry_id} (complexity score: {analysis['complexity_score']})")
-        
-        # Simple header with metadata in one line
-        formatted_parts.append(f"**Heroes' Journey Update** | Author: {author} | Date: {formatted_date} | Entry: {entry_id}")
-        formatted_parts.append("")
-        formatted_parts.append("---")
-        formatted_parts.append("")
-        
-        # Use content as-is since it's already formatted
-        formatted_parts.append(cleaned_content)
-        formatted_parts.append("")
-        formatted_parts.append("---")
-        formatted_parts.append("*Auto-posted from changelog*")
-    else:
-        # Content needs more structure - use enhanced formatting  
-        logger.info(f"Using enhanced formatting for entry {entry_id} (complexity score: {analysis['complexity_score']})")
-        
-        formatted_parts.append("## Heroes' Journey Changelog Update")
-        formatted_parts.append("")
-        formatted_parts.append(f"**Author:** {author}")
-        formatted_parts.append("")
-        formatted_parts.append(f"**Date:** {formatted_date}")
-        formatted_parts.append("")
-        formatted_parts.append(f"**Entry ID:** {entry_id}")
-        formatted_parts.append("")
-        formatted_parts.append("---")
-        formatted_parts.append("")
-        formatted_parts.append(cleaned_content)
-        formatted_parts.append("")
-        formatted_parts.append("---")
-        formatted_parts.append("*This post was automatically generated from the official changelog.*")
-    
-    return "\n".join(formatted_parts)
+    return formatted_content
 
 async def check_recent_reddit_posts(entry_id):
     """
