@@ -88,6 +88,9 @@ CHANGELOG_PATH = "/app/changelog.md"
 # Add path for ServerStatus.md
 SERVER_STATUS_PATH = "/app/ServerStatus.md"
 
+# Add path for changelog processing state
+PROCESSING_STATE_PATH = "/app/changelog_processing_state.json"
+
 
 def mask_sensitive_string(s: str) -> str:
     """Mask sensitive string by showing only first and last 4 characters"""
@@ -823,55 +826,55 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/wiki/update-changelog", dependencies=[Depends(verify_token)])
-async def update_wiki_with_all_changelogs():
-    """
-    Fetch all changelogs and update the wiki page with them.
-    Requires X-Patcher-Token header for authentication.
-    """
-    print("\n=== Starting Wiki Changelog Update ===")
-
-    # Check if wiki integration is configured
-    if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
-        raise HTTPException(
-            status_code=500,
-            detail="Wiki integration is not fully configured. Please set WIKI_API_URL, WIKI_API_KEY, and WIKI_PAGE_ID."
-        )
-
-    try:
-        # Get all changelogs using existing endpoint logic
-        changelogs = await get_changelog(all=True)
-
-        if not changelogs["total"]:
-            return {
-                "status": "success",
-                "message": "No changelogs found to update"
-            }
-
-        # Format all changelogs for wiki
-        formatted_content = "# Changelog\n\n"
-        for changelog in changelogs["changelogs"]:
-            formatted_content += changelog["formatted_content"]
-
-        # Update the wiki page
-        page_id = int(WIKI_PAGE_ID)
-        success = await update_wiki_page(formatted_content, page_id)
-
-        if success:
-            return {
-                "status": "success",
-                "message": f"Successfully updated wiki with {changelogs['total']} changelog entries",
-                "total_entries": changelogs["total"]
-            }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to update wiki page"
-            )
-
-    except Exception as e:
-        print(f"❌ Error updating wiki with changelogs: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.post("/wiki/update-changelog", dependencies=[Depends(verify_token)])
+# async def update_wiki_with_all_changelogs():
+#     """
+#     Fetch all changelogs and update the wiki page with them.
+#     Requires X-Patcher-Token header for authentication.
+#     """
+#     print("\n=== Starting Wiki Changelog Update ===")
+# 
+#     # Check if wiki integration is configured
+#     if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
+#         raise HTTPException(
+#             status_code=500,
+#             detail="Wiki integration is not fully configured. Please set WIKI_API_URL, WIKI_API_KEY, and WIKI_PAGE_ID."
+#         )
+# 
+#     try:
+#         # Get all changelogs using existing endpoint logic
+#         changelogs = await get_changelog(all=True)
+# 
+#         if not changelogs["total"]:
+#             return {
+#                 "status": "success",
+#                 "message": "No changelogs found to update"
+#             }
+# 
+#         # Format all changelogs for wiki
+#         formatted_content = "# Changelog\n\n"
+#         for changelog in changelogs["changelogs"]:
+#             formatted_content += changelog["formatted_content"]
+# 
+#         # Update the wiki page
+#         page_id = int(WIKI_PAGE_ID)
+#         success = await update_wiki_page(formatted_content, page_id)
+# 
+#         if success:
+#             return {
+#                 "status": "success",
+#                 "message": f"Successfully updated wiki with {changelogs['total']} changelog entries",
+#                 "total_entries": changelogs["total"]
+#             }
+#         else:
+#             raise HTTPException(
+#                 status_code=500,
+#                 detail="Failed to update wiki page"
+#             )
+# 
+#     except Exception as e:
+#         print(f"❌ Error updating wiki with changelogs: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 async def update_wiki_page(content: str, page_id: int) -> bool:
@@ -1040,6 +1043,279 @@ async def start_discord():
         raise
 
 
+# Changelog monitoring with debouncing
+class ChangelogMonitor:
+    """Monitor changelog.md for changes and batch process updates with debouncing"""
+    
+    def __init__(self):
+        self.last_processed_entry_id = None
+        self.pending_entries = []
+        self.debounce_timer = None
+        self.file_last_modified = None
+        self.monitoring_active = True
+        self.file_hash = None
+        self.load_state()
+        
+    def load_state(self):
+        """Load processing state from file"""
+        try:
+            if os.path.exists(PROCESSING_STATE_PATH):
+                with open(PROCESSING_STATE_PATH, 'r') as f:
+                    state = json.load(f)
+                    self.last_processed_entry_id = state.get('last_processed_entry_id')
+                    logger.info(f"Loaded state: last processed entry {self.last_processed_entry_id}")
+        except Exception as e:
+            logger.error(f"Error loading processing state: {str(e)}")
+    
+    def save_state(self):
+        """Save processing state to file"""
+        try:
+            state = {
+                'last_processed_entry_id': self.last_processed_entry_id,
+                'last_updated': datetime.now().isoformat()
+            }
+            with open(PROCESSING_STATE_PATH, 'w') as f:
+                json.dump(state, f, indent=2)
+            logger.info(f"Saved state: last processed entry {self.last_processed_entry_id}")
+        except Exception as e:
+            logger.error(f"Error saving processing state: {str(e)}")
+    
+    async def detect_new_entries(self):
+        """Detect new entries in changelog.md"""
+        try:
+            if not os.path.exists(CHANGELOG_PATH):
+                return []
+            
+            # Read the changelog file
+            with open(CHANGELOG_PATH, 'r') as f:
+                content = f.read()
+            
+            # Parse entries
+            new_entries = []
+            entry_pattern = r"## Entry (\d+)\n\*\*Author:\*\* (.*?)\n\*\*Date:\*\* (.*?)\n\n([\s\S]*?)(?=\n---\n|$)"
+            
+            for match in re.finditer(entry_pattern, content):
+                entry_id = match.group(1)
+                author = match.group(2)
+                timestamp = match.group(3)
+                entry_content = match.group(4).strip()
+                
+                # Check if this is a new entry
+                if self.last_processed_entry_id is None or int(entry_id) > int(self.last_processed_entry_id):
+                    new_entries.append({
+                        'id': entry_id,
+                        'author': author,
+                        'timestamp': timestamp,
+                        'content': entry_content
+                    })
+            
+            # Sort by ID to ensure correct order
+            new_entries.sort(key=lambda x: int(x['id']))
+            
+            if new_entries:
+                logger.info(f"Detected {len(new_entries)} new entries")
+                
+            return new_entries
+            
+        except Exception as e:
+            logger.error(f"Error detecting new entries: {str(e)}")
+            logger.error(traceback.format_exc())
+            return []
+    
+    async def monitor_changelog_file(self):
+        """Monitor changelog.md for changes with debouncing"""
+        logger.info("Starting changelog file monitor")
+        
+        # Initial check for any unprocessed entries
+        initial_entries = await self.detect_new_entries()
+        if initial_entries:
+            logger.info(f"Found {len(initial_entries)} unprocessed entries on startup")
+            await self.handle_new_entries(initial_entries)
+        
+        while self.monitoring_active:
+            try:
+                if not os.path.exists(CHANGELOG_PATH):
+                    await asyncio.sleep(5)
+                    continue
+                
+                # Check file modification time
+                current_mtime = os.path.getmtime(CHANGELOG_PATH)
+                
+                # Also check file content hash for more reliable change detection
+                with open(CHANGELOG_PATH, 'rb') as f:
+                    import hashlib
+                    current_hash = hashlib.md5(f.read()).hexdigest()
+                
+                if (self.file_last_modified and current_mtime > self.file_last_modified) or \
+                   (self.file_hash and current_hash != self.file_hash):
+                    # File has changed
+                    logger.info("Changelog file change detected")
+                    new_entries = await self.detect_new_entries()
+                    
+                    if new_entries:
+                        await self.handle_new_entries(new_entries)
+                
+                self.file_last_modified = current_mtime
+                self.file_hash = current_hash
+                
+                await asyncio.sleep(5)  # Check every 5 seconds
+                
+            except Exception as e:
+                logger.error(f"Error monitoring changelog: {str(e)}")
+                logger.error(traceback.format_exc())
+                await asyncio.sleep(5)
+    
+    async def handle_new_entries(self, new_entries):
+        """Handle new entries with debouncing"""
+        # Add new entries to pending list (avoid duplicates)
+        existing_ids = {e['id'] for e in self.pending_entries}
+        for entry in new_entries:
+            if entry['id'] not in existing_ids:
+                self.pending_entries.append(entry)
+        
+        # Log the first entry if this is a new batch
+        if self.debounce_timer is None and self.pending_entries:
+            logger.info(f"First new entry detected: {self.pending_entries[0]['id']} by {self.pending_entries[0]['author']}")
+        
+        # Cancel existing timer if any
+        if self.debounce_timer and not self.debounce_timer.done():
+            self.debounce_timer.cancel()
+            logger.info(f"Timer reset. Now tracking {len(self.pending_entries)} pending entries")
+        
+        # Start new 5-minute timer
+        logger.info(f"Starting 5-minute timer for {len(self.pending_entries)} entries")
+        self.debounce_timer = asyncio.create_task(self.process_after_delay())
+    
+    async def process_after_delay(self):
+        """Wait for 5 minutes then process all pending entries"""
+        try:
+            logger.info(f"Waiting 5 minutes before processing {len(self.pending_entries)} entries")
+            await asyncio.sleep(300)  # 5 minutes
+            
+            # Process all pending entries
+            await self.process_pending_entries()
+            
+        except asyncio.CancelledError:
+            logger.info("Timer cancelled - new entries detected")
+            raise
+    
+    async def process_pending_entries(self):
+        """Process all accumulated entries"""
+        if not self.pending_entries:
+            return
+        
+        logger.info(f"Processing {len(self.pending_entries)} changelog entries")
+        force_azure_log(f"Processing batch of {len(self.pending_entries)} changelog entries")
+        
+        try:
+            # Sort by ID to ensure correct order
+            self.pending_entries.sort(key=lambda x: int(x['id']))
+            
+            # Get the latest entry for primary operations
+            latest_entry = self.pending_entries[-1]
+            
+            # Process Reddit posting if configured
+            if await self.should_post_to_reddit():
+                await self.post_batch_to_reddit(latest_entry)
+            
+            # Update Wiki if configured
+            if await self.should_update_wiki():
+                await self.update_wiki_with_entries()
+            
+            # Update last processed ID
+            self.last_processed_entry_id = latest_entry['id']
+            self.save_state()
+            
+            logger.info(f"Successfully processed entries up to {self.last_processed_entry_id}")
+            
+            # Clear pending entries and timer
+            self.pending_entries = []
+            self.debounce_timer = None
+            
+        except Exception as e:
+            logger.error(f"Error processing entries: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Don't clear pending entries on error - we'll retry
+    
+    async def should_post_to_reddit(self):
+        """Check if Reddit posting is configured and enabled"""
+        return all([
+            os.getenv('REDDIT_CLIENT_ID'),
+            os.getenv('REDDIT_CLIENT_SECRET'),
+            os.getenv('REDDIT_USERNAME'),
+            os.getenv('REDDIT_PASSWORD'),
+            os.getenv('REDDIT_SUBREDDIT')
+        ])
+    
+    async def should_update_wiki(self):
+        """Check if Wiki updating is configured and enabled"""
+        return all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID])
+    
+    async def post_batch_to_reddit(self, latest_entry):
+        """Post the latest entry to Reddit (which will check for batching)"""
+        try:
+            reddit_poster = import_reddit_poster()
+            if not reddit_poster:
+                logger.error("Failed to import Reddit poster")
+                return
+            
+            logger.info(f"Posting to Reddit: entry {latest_entry['id']}")
+            success, message = await reddit_poster.post_changelog_to_reddit(latest_entry)
+            
+            if success:
+                logger.info(f"Reddit post successful: {message}")
+            else:
+                logger.error(f"Reddit post failed: {message}")
+                
+        except Exception as e:
+            logger.error(f"Error posting to Reddit: {str(e)}")
+            logger.error(traceback.format_exc())
+    
+    async def update_wiki_with_entries(self):
+        """Update Wiki with all changelogs"""
+        try:
+            logger.info("Updating Wiki with latest changelogs")
+            
+            # Get all changelogs
+            changelogs = await get_changelog(all=True)
+            
+            if not changelogs["total"]:
+                logger.warning("No changelogs found for Wiki update")
+                return
+            
+            # Format all changelogs for wiki
+            formatted_content = WIKI_HEADER + "\n\n"
+            for changelog in changelogs["changelogs"]:
+                # Add formatted content
+                formatted_content += f"## {changelog['timestamp']}\n"
+                formatted_content += f"**Author:** {changelog['author']}\n\n"
+                formatted_content += changelog['content'] + "\n\n"
+                formatted_content += "---\n\n"
+            
+            # Update the wiki page
+            page_id = int(WIKI_PAGE_ID)
+            success = await update_wiki_page(formatted_content, page_id)
+            
+            if success:
+                logger.info(f"Wiki updated with {changelogs['total']} entries")
+            else:
+                logger.error("Failed to update Wiki")
+                
+        except Exception as e:
+            logger.error(f"Error updating Wiki: {str(e)}")
+            logger.error(traceback.format_exc())
+    
+    async def force_process(self):
+        """Force immediate processing of pending entries"""
+        if self.debounce_timer and not self.debounce_timer.done():
+            self.debounce_timer.cancel()
+        
+        if self.pending_entries:
+            await self.process_pending_entries()
+            return True
+        return False
+
+
 async def start_api():
     """Start the FastAPI server"""
     try:
@@ -1103,7 +1379,69 @@ async def start_api():
         logger.error(f"Error type: {type(e).__name__}")
         raise
 
+# Create the changelog monitor instance
+changelog_monitor = ChangelogMonitor()
 
+# Changelog monitoring startup
+@app.on_event("startup")
+async def start_changelog_monitor():
+    """Start the changelog monitoring task"""
+    asyncio.create_task(changelog_monitor.monitor_changelog_file())
+    logger.info("Changelog monitor started with 5-minute debouncing")
+    force_azure_log("Changelog monitor started - will batch process updates with 5-minute delay")
+
+# Monitor endpoints
+@app.post("/process-pending", dependencies=[Depends(verify_token)])
+async def process_pending_manually():
+    """Manually trigger processing of pending entries"""
+    if await changelog_monitor.force_process():
+        return {
+            "status": "success", 
+            "message": f"Processed {len(changelog_monitor.pending_entries)} entries"
+        }
+    return {"status": "success", "message": "No pending entries to process"}
+
+@app.get("/monitor-status", dependencies=[Depends(verify_token)])
+async def get_monitor_status():
+    """Get current monitoring status"""
+    timer_remaining = None
+    if changelog_monitor.debounce_timer and not changelog_monitor.debounce_timer.done():
+        # This is approximate since we can't easily track exact remaining time
+        timer_remaining = "Active (up to 5 minutes remaining)"
+    
+    return {
+        "monitoring_active": changelog_monitor.monitoring_active,
+        "last_processed_entry": changelog_monitor.last_processed_entry_id,
+        "pending_entries_count": len(changelog_monitor.pending_entries),
+        "pending_entries": [
+            {"id": e['id'], "author": e['author'], "timestamp": e['timestamp']} 
+            for e in changelog_monitor.pending_entries
+        ],
+        "timer_active": changelog_monitor.debounce_timer is not None and not changelog_monitor.debounce_timer.done(),
+        "timer_status": timer_remaining,
+        "file_last_modified": datetime.fromtimestamp(changelog_monitor.file_last_modified).isoformat() if changelog_monitor.file_last_modified else None
+    }
+
+@app.post("/monitor-control", dependencies=[Depends(verify_token)])
+async def control_monitor(action: str):
+    """Control the monitoring system"""
+    if action == "pause":
+        changelog_monitor.monitoring_active = False
+        return {"status": "success", "message": "Monitoring paused"}
+    elif action == "resume":
+        changelog_monitor.monitoring_active = True
+        return {"status": "success", "message": "Monitoring resumed"}
+    elif action == "reset":
+        # Reset state but keep last processed ID
+        changelog_monitor.pending_entries = []
+        if changelog_monitor.debounce_timer:
+            changelog_monitor.debounce_timer.cancel()
+        changelog_monitor.debounce_timer = None
+        return {"status": "success", "message": "Monitor state reset"}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action. Use 'pause', 'resume', or 'reset'")
+
+# Reddit posting with duplicate checking and batching
 def import_reddit_poster():
     """Import the Reddit poster module."""
     try:
@@ -1126,12 +1464,23 @@ async def post_to_reddit(entry_id: Optional[str] = None, force: bool = False, ba
     
     Parameters:
     - entry_id: Specific entry ID to post (optional)
-    - force: If True, bypasses duplicate checking (optional)
+    - force: If True, bypasses duplicate checking and monitor warnings (optional)
     - batch: If True, includes nearby entries in the same post (default: True)
     
     Requires X-Patcher-Token header for authentication.
     """
     try:
+        # Check monitor state first
+        if changelog_monitor.pending_entries and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Monitor has {len(changelog_monitor.pending_entries)} pending entries. "
+                       f"Use force=true to override or wait for automatic processing."
+            )
+        
+        if changelog_monitor.pending_entries and force:
+            logger.warning(f"Force posting despite {len(changelog_monitor.pending_entries)} pending entries")
+        
         logger.info("\n=== Posting to Reddit ===")
         logger.info(f"Entry ID: {entry_id if entry_id else 'Latest'}")
         logger.info(f"Force mode: {force}")
@@ -1210,12 +1559,27 @@ async def post_to_reddit(entry_id: Optional[str] = None, force: bool = False, ba
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.post("/reddit/post-all-entries", dependencies=[Depends(verify_token)])
-async def post_all_entries_to_reddit():
+async def post_all_entries_to_reddit(force: bool = False):
     """
     Post all unpublished changelog entries to Reddit.
+    
+    Parameters:
+    - force: If True, bypasses monitor warnings (optional)
+    
     Requires X-Patcher-Token header for authentication.
     """
     try:
+        # Check monitor state first
+        if changelog_monitor.pending_entries and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Monitor has {len(changelog_monitor.pending_entries)} pending entries. "
+                       f"Use force=true to override or wait for automatic processing."
+            )
+        
+        if changelog_monitor.pending_entries and force:
+            logger.warning(f"Force posting all entries despite {len(changelog_monitor.pending_entries)} pending entries")
+        
         logger.info("\n=== Posting All Unpublished Entries to Reddit ===")
 
         # Import the Reddit poster
