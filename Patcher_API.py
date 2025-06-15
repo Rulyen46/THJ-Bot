@@ -824,57 +824,194 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
     except Exception as e:
         logger.error(f"Error fetching changelogs: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+async def get_wiki_page_content(page_id: int) -> str:
+    """
+    Fetch the current content of a wiki page.
+    Returns the page content as a string, or None if failed.
+    """
+    try:
+        headers = {
+            'Authorization': f'Bearer {WIKI_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        # GraphQL query to fetch page content
+        query = """
+        query GetPage($id: Int!) {
+          pages {
+            single(id: $id) {
+              content
+              updatedAt
+            }
+          }
+        }
+        """
+        
+        variables = {
+            "id": page_id
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                WIKI_API_URL,
+                json={"query": query, "variables": variables},
+                headers=headers
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if 'errors' in data:
+                        logger.error(f"GraphQL errors fetching wiki page: {data['errors']}")
+                        return None
+                    
+                    page_data = data.get('data', {}).get('pages', {}).get('single', {})
+                    return page_data.get('content', '')
+                else:
+                    logger.error(f"Failed to fetch wiki page: HTTP {response.status}")
+                    return None
+                    
+    except Exception as e:
+        logger.error(f"Error fetching wiki page content: {str(e)}")
+        return None
 
+def parse_existing_changelog_ids(wiki_content: str) -> set:
+    """
+    Parse the wiki content to extract existing changelog entry IDs.
+    Returns a set of entry IDs that are already in the wiki.
+    """
+    existing_ids = set()
+    
+    # Look for entry IDs in the wiki content
+    import re
+    
+    # Multiple patterns to catch different formats
+    patterns = [
+        r'Entry ID:\s*(\d+)',  # Entry ID: 1234567890
+        r'Entry\s+(\d+)',      # Entry 1234567890
+        r'Message ID:\s*(\d+)', # Message ID: 1234567890
+        r'## Entry (\d+)',     # ## Entry 1234567890 (changelog.md format)
+        r'## \d{4}-\d{2}-\d{2} \d{2}:\d{2} - Entry (\d+)',  # ## 2024-02-24 02:59 - Entry 1234567890 (wiki format)
+        r'- Entry (\d+)',      # - Entry 1234567890
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, wiki_content, re.IGNORECASE)
+        existing_ids.update(matches)
+    
+    logger.info(f"Found {len(existing_ids)} existing entries in wiki")
+    return existing_ids
 
-# @app.post("/wiki/update-changelog", dependencies=[Depends(verify_token)])
-# async def update_wiki_with_all_changelogs():
-#     """
-#     Fetch all changelogs and update the wiki page with them.
-#     Requires X-Patcher-Token header for authentication.
-#     """
-#     print("\n=== Starting Wiki Changelog Update ===")
-# 
-#     # Check if wiki integration is configured
-#     if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
-#         raise HTTPException(
-#             status_code=500,
-#             detail="Wiki integration is not fully configured. Please set WIKI_API_URL, WIKI_API_KEY, and WIKI_PAGE_ID."
-#         )
-# 
-#     try:
-#         # Get all changelogs using existing endpoint logic
-#         changelogs = await get_changelog(all=True)
-# 
-#         if not changelogs["total"]:
-#             return {
-#                 "status": "success",
-#                 "message": "No changelogs found to update"
-#             }
-# 
-#         # Format all changelogs for wiki
-#         formatted_content = "# Changelog\n\n"
-#         for changelog in changelogs["changelogs"]:
-#             formatted_content += changelog["formatted_content"]
-# 
-#         # Update the wiki page
-#         page_id = int(WIKI_PAGE_ID)
-#         success = await update_wiki_page(formatted_content, page_id)
-# 
-#         if success:
-#             return {
-#                 "status": "success",
-#                 "message": f"Successfully updated wiki with {changelogs['total']} changelog entries",
-#                 "total_entries": changelogs["total"]
-#             }
-#         else:
-#             raise HTTPException(
-#                 status_code=500,
-#                 detail="Failed to update wiki page"
-#             )
-# 
-#     except Exception as e:
-#         print(f"❌ Error updating wiki with changelogs: {str(e)}")
-#         raise HTTPException(status_code=500, detail=str(e))
+async def update_wiki_with_new_entries(new_entries):
+    """
+    Update the wiki with only new changelog entries.
+    New entries are prepended (newest at top).
+    Discord mentions are cleaned before posting.
+    """
+    if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
+        logger.info("Wiki integration not configured, skipping wiki update")
+        return False
+        
+    try:
+        page_id = int(WIKI_PAGE_ID)
+        
+        # Step 1: Get current wiki content
+        logger.info("Fetching current wiki page content...")
+        current_content = await get_wiki_page_content(page_id)
+        
+        if current_content is None:
+            logger.error("Failed to fetch current wiki content")
+            return False
+            
+        # Step 2: Parse existing entry IDs
+        existing_ids = parse_existing_changelog_ids(current_content)
+        
+        # Step 3: Filter out entries that already exist
+        entries_to_add = []
+        for entry in new_entries:
+            if str(entry['id']) not in existing_ids:
+                entries_to_add.append(entry)
+        
+        if not entries_to_add:
+            logger.info("No new entries to add to wiki")
+            return True
+            
+        logger.info(f"Adding {len(entries_to_add)} new entries to wiki")
+        
+        # Step 4: Sort entries by ID/timestamp in DESCENDING order (newest first)
+        entries_to_add.sort(key=lambda x: int(x['id']), reverse=True)
+        
+        # Step 5: Format new entries (newest first)
+        new_content_section = ""
+        for entry in entries_to_add:
+            # Format each entry
+            try:
+                entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+            except:
+                entry_time = entry["timestamp"]
+                
+            new_content_section += f"## {entry_time} - Entry {entry['id']}\n"
+            new_content_section += f"**Author:** {entry['author']}\n\n"
+            
+            # Clean Discord mentions from content
+            content = entry['content'].strip()
+            cleaned_content = clean_discord_mentions(content)
+            
+            # If content is in code blocks, preserve them
+            if cleaned_content.startswith('```'):
+                new_content_section += cleaned_content + "\n\n"
+            else:
+                new_content_section += cleaned_content + "\n\n"
+            new_content_section += "---\n\n"
+        
+        # Step 6: Prepend new content after header
+        if not current_content.strip():
+            # Empty page, start fresh
+            updated_content = WIKI_HEADER + "\n\n" + new_content_section
+        else:
+            # Split content to find header and existing entries
+            if WIKI_HEADER in current_content:
+                # Split at the header
+                parts = current_content.split(WIKI_HEADER, 1)
+                if len(parts) == 2:
+                    # Everything after the header
+                    content_after_header = parts[1]
+                    
+                    # Find where the actual changelog entries start
+                    # Updated regex to match the wiki format: ## YYYY-MM-DD HH:MM - Entry ID
+                    import re
+                    first_entry_match = re.search(r'\n(## \d{4}-\d{2}-\d{2} \d{2}:\d{2} - Entry \d+)', content_after_header)
+                    
+                    if first_entry_match:
+                        # There are existing entries
+                        pre_entry_content = content_after_header[:first_entry_match.start()]
+                        existing_entries = content_after_header[first_entry_match.start():]
+                        
+                        # Reconstruct: Header + any content before entries + new entries + existing entries
+                        updated_content = WIKI_HEADER + pre_entry_content + "\n" + new_content_section + existing_entries
+                    else:
+                        # No existing entries found, just append new content after header
+                        updated_content = WIKI_HEADER + content_after_header + "\n" + new_content_section
+                else:
+                    # Fallback - prepend to everything
+                    updated_content = WIKI_HEADER + "\n\n" + new_content_section + current_content
+            else:
+                # No header found, add header and new content at the top
+                updated_content = WIKI_HEADER + "\n\n" + new_content_section + current_content
+        
+        # Step 7: Update the wiki page
+        success = await update_wiki_page(updated_content, page_id)
+        
+        if success:
+            logger.info(f"Successfully updated wiki with {len(entries_to_add)} new entries (prepended, Discord mentions cleaned)")
+            return True
+        else:
+            logger.error("Failed to update wiki page")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error updating wiki with new entries: {str(e)}")
+        logger.error(traceback.format_exc())
+        return False
 
 
 async def update_wiki_page(content: str, page_id: int) -> bool:
@@ -932,80 +1069,36 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
         logger.info(
             f"- Variables: id={page_id}, content_length={len(content)}")
 
-        async with aiohttp.ClientSession() as session:
+        # Add timeout to prevent hanging
+        timeout = aiohttp.ClientTimeout(total=30)
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             # Step 1: Update content with isPublished
             logger.info("\nExecuting update mutation...")
-            async with session.post(
-                WIKI_API_URL,
-                json={"query": update_mutation, "variables": variables},
-                headers=headers
-            ) as response:
-                response_status = response.status
-                response_data = await response.json()
-
-                logger.info(f"\nUpdate Response Analysis:")
-                logger.info(f"- HTTP Status: {response_status}")
-                logger.info(
-                    f"- Raw Response: {json.dumps(response_data, indent=2)}")
-
-                if 'errors' in response_data:
-                    logger.error("\nGraphQL Errors in update:")
-                    for error in response_data['errors']:
-                        logger.error(f"- Path: {error.get('path', 'N/A')}")
-                        logger.error(
-                            f"- Message: {error.get('message', 'N/A')}")
-                        logger.error(
-                            f"- Extensions: {error.get('extensions', {})}")
-                    return False
-
-                update_result = response_data.get('data', {}).get(
-                    'pages', {}).get('update', {}).get('responseResult', {})
-
-                # Continue even if we get the map error, as we know the update still works
-                if update_result.get('message') == "Cannot read properties of undefined (reading 'map')":
-                    logger.warning(
-                        "\n⚠️ Received 'map' error but continuing as this is expected")
-                elif not update_result.get('succeeded', False):
-                    logger.error(
-                        f"\n❌ Failed to update page: {update_result.get('message', 'Unknown error')}")
-                    return False
-
-                # Step 2: Render the page
-                render_mutation = """
-                mutation RenderPage($id: Int!) {
-                  pages {
-                    render(id: $id) {
-                      responseResult {
-                        succeeded
-                        message
-                      }
-                    }
-                  }
-                }
-                """
-
-                render_variables = {
-                    "id": page_id
-                }
-
-                logger.info("\nExecuting render mutation...")
+            try:
                 async with session.post(
                     WIKI_API_URL,
-                    json={"query": render_mutation,
-                          "variables": render_variables},
+                    json={"query": update_mutation, "variables": variables},
                     headers=headers
-                ) as render_response:
-                    render_status = render_response.status
-                    render_data = await render_response.json()
+                ) as response:
+                    response_status = response.status
+                    response_text = await response.text()
+                    
+                    logger.info(f"\nUpdate Response Analysis:")
+                    logger.info(f"- HTTP Status: {response_status}")
+                    
+                    # Try to parse as JSON
+                    try:
+                        response_data = json.loads(response_text)
+                        logger.info(
+                            f"- Raw Response: {json.dumps(response_data, indent=2)}")
+                    except json.JSONDecodeError:
+                        logger.error(f"- Raw Response (not JSON): {response_text[:500]}")
+                        return False
 
-                    logger.info(f"\nRender Response Analysis:")
-                    logger.info(f"- HTTP Status: {render_status}")
-                    logger.info(
-                        f"- Raw Response: {json.dumps(render_data, indent=2)}")
-
-                    if 'errors' in render_data:
-                        logger.error("\nGraphQL Errors in render:")
-                        for error in render_data['errors']:
+                    if 'errors' in response_data:
+                        logger.error("\nGraphQL Errors in update:")
+                        for error in response_data['errors']:
                             logger.error(f"- Path: {error.get('path', 'N/A')}")
                             logger.error(
                                 f"- Message: {error.get('message', 'N/A')}")
@@ -1013,22 +1106,59 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
                                 f"- Extensions: {error.get('extensions', {})}")
                         return False
 
-                    render_result = render_data.get('data', {}).get(
-                        'pages', {}).get('render', {}).get('responseResult', {})
+                    update_result = response_data.get('data', {}).get(
+                        'pages', {}).get('update', {}).get('responseResult', {})
 
-                    if not render_result.get('succeeded', False):
-                        logger.error(
-                            f"\n❌ Failed to render page: {render_result.get('message', 'Unknown error')}")
-                        return False
-
-                    logger.info("\n✅ Successfully rendered page")
-                    return True
+                    # Check if update was successful
+                    if update_result.get('succeeded', False):
+                        logger.info(f"\n✅ Successfully updated page")
+                        logger.info(f"- Slug: {update_result.get('slug', 'N/A')}")
+                        logger.info(f"- Message: {update_result.get('message', 'N/A')}")
+                        return True
+                    else:
+                        # Handle the known 'map' error
+                        if update_result.get('message') == "Cannot read properties of undefined (reading 'map')":
+                            logger.warning(
+                                "\n⚠️ Received 'map' error - this might be a Wiki.js bug but the update may have succeeded")
+                            # You might want to verify the update by fetching the page
+                            return True
+                        else:
+                            logger.error(
+                                f"\n❌ Failed to update page: {update_result.get('message', 'Unknown error')}")
+                            logger.error(f"- Error Code: {update_result.get('errorCode', 'N/A')}")
+                            return False
+                            
+            except asyncio.TimeoutError:
+                logger.error("\n❌ Request timed out after 30 seconds")
+                return False
+            except aiohttp.ClientError as e:
+                logger.error(f"\n❌ HTTP Client Error: {str(e)}")
+                return False
 
     except Exception as e:
         logger.error(f"❌ Error in update_wiki_page: {type(e).__name__}")
         logger.error(f"Error details: {str(e)}")
+        logger.error(traceback.format_exc())
         return False
-
+    
+def clean_discord_mentions(content):
+    """
+    Remove Discord user mentions from changelog content.
+    Removes patterns like ( <@123456789> ) from the end of lines.
+    Also handles @ mentions like (@Username).
+    """
+    # Remove Discord user ID mentions in format ( <@123456789> )
+    # This regex matches the pattern with optional spaces
+    content = re.sub(r'\s*\(\s*<@\d+>\s*\)', '', content)
+    
+    # Remove @ mentions in format ( @Username)
+    content = re.sub(r'\s*\(\s*@[\w\s]+\)', '', content)
+    
+    # Clean up any trailing spaces left behind
+    lines = content.split('\n')
+    cleaned_lines = [line.rstrip() for line in lines]
+    
+    return '\n'.join(cleaned_lines)
 
 async def start_discord():
     """Start the Discord client"""
@@ -1208,7 +1338,7 @@ class ChangelogMonitor:
         force_azure_log(f"Processing batch of {len(self.pending_entries)} changelog entries")
         
         try:
-            # Sort by ID to ensure correct order
+            # Sort by ID to ensure correct order (ascending for processing)
             self.pending_entries.sort(key=lambda x: int(x['id']))
             
             # Get the latest entry for primary operations
@@ -1218,9 +1348,10 @@ class ChangelogMonitor:
             if await self.should_post_to_reddit():
                 await self.post_batch_to_reddit(latest_entry)
             
-            # Update Wiki if configured
+            # Update Wiki with new entries if configured
+            # The wiki update function will handle reverse ordering internally
             if await self.should_update_wiki():
-                await self.update_wiki_with_entries()
+                await update_wiki_with_new_entries(self.pending_entries)
             
             # Update last processed ID
             self.last_processed_entry_id = latest_entry['id']
@@ -1800,7 +1931,185 @@ async def test_reddit_flair():
     except Exception as e:
         logger.error(f"Error in test_reddit_flair: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/wiki/sync-changelog", dependencies=[Depends(verify_token)])
+async def sync_wiki_changelog():
+    """
+    Manually sync all changelog entries to wiki, checking for duplicates.
+    Requires X-Patcher-Token header for authentication.
+    """
+    if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
+        raise HTTPException(
+            status_code=500,
+            detail="Wiki integration is not fully configured"
+        )
+    
+    try:
+        # Get all changelogs
+        changelogs_response = await get_changelog(all=True)
+        all_entries = changelogs_response.get("changelogs", [])
+        
+        if not all_entries:
+            return {
+                "status": "success",
+                "message": "No changelogs found to sync"
+            }
+        
+        # Update wiki with all entries (function will check for duplicates)
+        success = await update_wiki_with_new_entries(all_entries)
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Wiki sync completed. Checked {len(all_entries)} entries."
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to sync wiki"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error syncing wiki: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/wiki/rebuild-changelog", dependencies=[Depends(verify_token)])
+async def rebuild_wiki_changelog():
+    """
+    Rebuild the entire wiki changelog page with all entries in correct order (newest first).
+    This will replace all content on the wiki page.
+    Discord mentions are cleaned before posting.
+    Requires X-Patcher-Token header for authentication.
+    """
+    if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
+        raise HTTPException(
+            status_code=500,
+            detail="Wiki integration is not fully configured"
+        )
+    
+    try:
+        # Get all changelogs
+        changelogs_response = await get_changelog(all=True)
+        all_entries = changelogs_response.get("changelogs", [])
+        
+        if not all_entries:
+            return {
+                "status": "success",
+                "message": "No changelogs found"
+            }
+        
+        # Sort all entries by ID in DESCENDING order (newest first)
+        all_entries.sort(key=lambda x: int(x['id']), reverse=True)
+        
+        # Build the complete wiki content
+        wiki_content = WIKI_HEADER + "\n\n"
+        
+        for entry in all_entries:
+            try:
+                entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+            except:
+                entry_time = entry["timestamp"]
+                
+            wiki_content += f"## {entry_time} - Entry {entry['id']}\n"
+            wiki_content += f"**Author:** {entry['author']}\n\n"
+            
+            # Clean Discord mentions from content
+            content = entry['content'].strip()
+            cleaned_content = clean_discord_mentions(content)
+            
+            if cleaned_content.startswith('```'):
+                wiki_content += cleaned_content + "\n\n"
+            else:
+                wiki_content += cleaned_content + "\n\n"
+            wiki_content += "---\n\n"
+        
+        # Update the wiki page
+        page_id = int(WIKI_PAGE_ID)
+        success = await update_wiki_page(wiki_content, page_id)
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Wiki rebuilt with {len(all_entries)} entries (newest first, Discord mentions cleaned)"
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update wiki page"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error rebuilding wiki: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/wiki/test-connection", dependencies=[Depends(verify_token)])
+async def test_wiki_connection():
+    """
+    Test the connection to Wiki.js and verify authentication.
+    Requires X-Patcher-Token header for authentication.
+    """
+    if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
+        raise HTTPException(
+            status_code=500,
+            detail="Wiki integration is not fully configured"
+        )
+    
+    try:
+        headers = {
+            'Authorization': f'Bearer {WIKI_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Simple query to test connection
+        test_query = """
+        query {
+          pages {
+            list {
+              id
+              title
+            }
+          }
+        }
+        """
+        
+        timeout = aiohttp.ClientTimeout(total=10)
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                WIKI_API_URL,
+                json={"query": test_query},
+                headers=headers
+            ) as response:
+                status = response.status
+                data = await response.json()
+                
+                if status == 200 and 'data' in data:
+                    page_count = len(data.get('data', {}).get('pages', {}).get('list', []))
+                    return {
+                        "status": "success",
+                        "message": "Wiki.js connection successful",
+                        "api_url": WIKI_API_URL,
+                        "page_id": WIKI_PAGE_ID,
+                        "pages_found": page_count
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": "Wiki.js connection failed",
+                        "http_status": status,
+                        "response": data
+                    }
+                    
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="Connection to Wiki.js timed out"
+        )
+    except Exception as e:
+        logger.error(f"Error testing wiki connection: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/heartbeat")
 async def heartbeat():
     """
