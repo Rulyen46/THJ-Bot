@@ -2,7 +2,7 @@ import os
 import discord
 from fastapi import FastAPI, HTTPException, Security, Depends, Request, Response
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import uvicorn
 from typing import Optional, Callable
@@ -21,6 +21,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 import importlib.util
 import traceback
+from collections import defaultdict
 
 # Configure logging for Azure
 logging.basicConfig(
@@ -825,6 +826,134 @@ async def get_changelog(message_id: Optional[str] = None, all: Optional[bool] = 
         logger.error(f"Error fetching changelogs: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
+async def create_wiki_page(title: str, path: str, content: str) -> bool:
+    """
+    Create a new wiki page or update if it exists.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        headers = {
+            'Authorization': f'Bearer {WIKI_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        # First, check if page exists
+        check_query = """
+        query GetPageByPath($path: String!) {
+          pages {
+            singleByPath(path: $path, locale: "en") {
+              id
+            }
+          }
+        }
+        """
+        
+        check_variables = {
+            "path": path
+        }
+        
+        timeout = aiohttp.ClientTimeout(total=30)
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Check if page exists
+            async with session.post(
+                WIKI_API_URL,
+                json={"query": check_query, "variables": check_variables},
+                headers=headers
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    existing_page = data.get('data', {}).get('pages', {}).get('singleByPath')
+                    
+                    if existing_page and existing_page.get('id'):
+                        # Page exists, update it
+                        logger.info(f"Page {path} exists with ID {existing_page['id']}, updating...")
+                        return await update_wiki_page(content, existing_page['id'])
+                    else:
+                        # Page doesn't exist, create it
+                        logger.info(f"Page {path} doesn't exist, creating...")
+                        
+                        create_mutation = """
+                        mutation CreatePage($input: PageCreateInput!) {
+                          pages {
+                            create(input: $input) {
+                              responseResult {
+                                succeeded
+                                errorCode
+                                message
+                              }
+                              page {
+                                id
+                                path
+                                title
+                              }
+                            }
+                          }
+                        }
+                        """
+                        
+                        create_variables = {
+                            "input": {
+                                "title": title,
+                                "path": path,
+                                "content": content,
+                                "locale": "en",
+                                "isPublished": True,
+                                "isPrivate": False
+                            }
+                        }
+                        
+                        async with session.post(
+                            WIKI_API_URL,
+                            json={"query": create_mutation, "variables": create_variables},
+                            headers=headers
+                        ) as create_response:
+                            if create_response.status == 200:
+                                create_data = await create_response.json()
+                                
+                                if 'errors' in create_data:
+                                    logger.error(f"GraphQL errors creating page: {create_data['errors']}")
+                                    return False
+                                
+                                result = create_data.get('data', {}).get('pages', {}).get('create', {})
+                                response_result = result.get('responseResult', {})
+                                
+                                if response_result.get('succeeded', False):
+                                    logger.info(f"Successfully created page: {path}")
+                                    return True
+                                else:
+                                    logger.error(f"Failed to create page: {response_result.get('message', 'Unknown error')}")
+                                    return False
+                            else:
+                                logger.error(f"HTTP error creating page: {create_response.status}")
+                                return False
+                else:
+                    error_text = await create_response.text()
+                    logger.error(f"HTTP error creating page: {create_response.status} - {error_text}")
+                    return False
+                    
+    except Exception as e:
+        logger.error(f"Error in create_wiki_page: {str(e)}")
+        logger.error(traceback.format_exc())
+        return False
+    
+async def organize_changelogs_by_month(all_entries):
+    """
+    Organize changelog entries by month for creating separate wiki pages.
+    """
+    entries_by_month = defaultdict(list)
+    
+    for entry in all_entries:
+        try:
+            entry_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+            month_key = entry_date.strftime("%Y-%m")
+            entries_by_month[month_key].append(entry)
+        except:
+            # Fallback for entries with invalid timestamps
+            entries_by_month["unknown"].append(entry)
+    
+    return entries_by_month
+    
 async def get_wiki_page_content(page_id: int) -> str:
     """
     Fetch the current content of a wiki page.
@@ -903,116 +1032,194 @@ def parse_existing_changelog_ids(wiki_content: str) -> set:
 
 async def update_wiki_with_new_entries(new_entries):
     """
-    Update the wiki with only new changelog entries.
-    New entries are prepended (newest at top).
-    Discord mentions are cleaned before posting.
+    Update the wiki with new changelog entries while maintaining monthly archive structure.
     """
     if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
         logger.info("Wiki integration not configured, skipping wiki update")
         return False
         
     try:
-        page_id = int(WIKI_PAGE_ID)
+        # First, check if we should update the monthly archives
+        # (This happens if new entries span multiple months or are older than 30 days)
+        needs_archive_update = False
+        cutoff_date = datetime.now() - timedelta(days=30)
         
-        # Step 1: Get current wiki content
-        logger.info("Fetching current wiki page content...")
-        current_content = await get_wiki_page_content(page_id)
-        
-        if current_content is None:
-            logger.error("Failed to fetch current wiki content")
-            return False
-            
-        # Step 2: Parse existing entry IDs
-        existing_ids = parse_existing_changelog_ids(current_content)
-        
-        # Step 3: Filter out entries that already exist
-        entries_to_add = []
+        months_affected = set()
         for entry in new_entries:
-            if str(entry['id']) not in existing_ids:
-                entries_to_add.append(entry)
-        
-        if not entries_to_add:
-            logger.info("No new entries to add to wiki")
-            return True
-            
-        logger.info(f"Adding {len(entries_to_add)} new entries to wiki")
-        
-        # Step 4: Sort entries by ID/timestamp in DESCENDING order (newest first)
-        entries_to_add.sort(key=lambda x: int(x['id']), reverse=True)
-        
-        # Step 5: Format new entries (newest first)
-        new_content_section = ""
-        for entry in entries_to_add:
-            # Format each entry
             try:
-                entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
-            except:
-                entry_time = entry["timestamp"]
+                entry_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+                month_key = entry_date.strftime("%Y-%m")
+                months_affected.add(month_key)
                 
-            new_content_section += f"## {entry_time} - Entry {entry['id']}\n"
-            new_content_section += f"**Author:** {entry['author']}\n\n"
-            
-            # Clean Discord mentions from content
-            content = entry['content'].strip()
-            cleaned_content = clean_discord_mentions(content)
-            
-            # If content is in code blocks, preserve them
-            if cleaned_content.startswith('```'):
-                new_content_section += cleaned_content + "\n\n"
-            else:
-                new_content_section += cleaned_content + "\n\n"
-            new_content_section += "---\n\n"
+                if entry_date < cutoff_date:
+                    needs_archive_update = True
+            except:
+                pass
         
-        # Step 6: Prepend new content after header
-        if not current_content.strip():
-            # Empty page, start fresh
-            updated_content = WIKI_HEADER + "\n\n" + new_content_section
+        # If entries affect multiple months or are old, recreate the entire structure
+        if needs_archive_update or len(months_affected) > 1:
+            logger.info("New entries affect archives, rebuilding monthly structure...")
+            # Call the create monthly archives function
+            result = await create_wiki_monthly_archives()
+            return result.get("status") == "success"
+        
+        # Otherwise, just update the main page with recent entries
+        logger.info("Updating main page with recent entries only...")
+        
+        # Get all changelogs to build the complete recent view
+        changelogs_response = await get_changelog(all=True)
+        all_entries = changelogs_response.get("changelogs", [])
+        
+        # Filter to last 30 days
+        recent_entries = []
+        for entry in all_entries:
+            try:
+                entry_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+                if entry_date >= cutoff_date:
+                    recent_entries.append(entry)
+            except:
+                pass
+        
+        # Sort by ID descending
+        recent_entries.sort(key=lambda x: int(x['id']), reverse=True)
+        
+        # Build main page content
+        main_page_content = WIKI_HEADER + "\n\n"
+        main_page_content += "## Recent Updates (Last 30 Days)\n\n"
+        
+        if recent_entries:
+            for entry in recent_entries:
+                try:
+                    entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+                except:
+                    entry_time = entry["timestamp"]
+                    
+                main_page_content += f"### {entry_time} - Entry {entry['id']}\n"
+                main_page_content += f"**Author:** {entry['author']}\n\n"
+                
+                # Clean Discord mentions
+                content = entry['content'].strip()
+                cleaned_content = clean_discord_mentions(content)
+                
+                # Truncate very long entries
+                if len(cleaned_content) > 500:
+                    cleaned_content = cleaned_content[:500] + "..."
+                    try:
+                        entry_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+                        entry_month = entry_date.strftime("%Y-%m")
+                        cleaned_content += f"\n\n[View full entry →](/en/changelog-{entry_month}#entry-{entry['id']})"
+                    except:
+                        pass
+                
+                main_page_content += cleaned_content + "\n\n---\n\n"
         else:
-            # Split content to find header and existing entries
-            if WIKI_HEADER in current_content:
-                # Split at the header
-                parts = current_content.split(WIKI_HEADER, 1)
-                if len(parts) == 2:
-                    # Everything after the header
-                    content_after_header = parts[1]
-                    
-                    # Find where the actual changelog entries start
-                    # Updated regex to match the wiki format: ## YYYY-MM-DD HH:MM - Entry ID
-                    import re
-                    first_entry_match = re.search(r'\n(## \d{4}-\d{2}-\d{2} \d{2}:\d{2} - Entry \d+)', content_after_header)
-                    
-                    if first_entry_match:
-                        # There are existing entries
-                        pre_entry_content = content_after_header[:first_entry_match.start()]
-                        existing_entries = content_after_header[first_entry_match.start():]
-                        
-                        # Reconstruct: Header + any content before entries + new entries + existing entries
-                        updated_content = WIKI_HEADER + pre_entry_content + "\n" + new_content_section + existing_entries
-                    else:
-                        # No existing entries found, just append new content after header
-                        updated_content = WIKI_HEADER + content_after_header + "\n" + new_content_section
-                else:
-                    # Fallback - prepend to everything
-                    updated_content = WIKI_HEADER + "\n\n" + new_content_section + current_content
-            else:
-                # No header found, add header and new content at the top
-                updated_content = WIKI_HEADER + "\n\n" + new_content_section + current_content
+            main_page_content += "*No updates in the last 30 days.*\n\n"
         
-        # Step 7: Update the wiki page
-        success = await update_wiki_page(updated_content, page_id)
+        # Add archive links section
+        main_page_content += "\n## Monthly Archives\n\n"
+        main_page_content += "Browse older updates organized by month:\n\n"
+        
+        # Get all entries to build archive list
+        entries_by_month = await organize_changelogs_by_month(all_entries)
+        
+        # Group archives by year
+        archives_by_year = defaultdict(list)
+        for month_key in sorted(entries_by_month.keys(), reverse=True):
+            if month_key == "unknown":
+                continue
+            try:
+                month_date = datetime.strptime(month_key, "%Y-%m")
+                month_name = month_date.strftime("%B %Y")
+                year = month_key[:4]
+                
+                # Check if this month has recent entries
+                has_recent = False
+                for entry in entries_by_month[month_key]:
+                    try:
+                        entry_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+                        if entry_date >= cutoff_date:
+                            has_recent = True
+                            break
+                    except:
+                        pass
+                
+                archives_by_year[year].append({
+                    "month_key": month_key,
+                    "month_name": month_name,
+                    "entry_count": len(entries_by_month[month_key]),
+                    "has_recent": has_recent
+                })
+            except:
+                pass
+        
+        # Display archives grouped by year
+        for year in sorted(archives_by_year.keys(), reverse=True):
+            main_page_content += f"\n### {year}\n"
+            for archive in archives_by_year[year]:
+                page_path = f"changelog-{archive['month_key']}"
+                icon = "📍" if archive['has_recent'] else "📄"
+                main_page_content += f"- {icon} [{archive['month_name']}](/en/{page_path}) - {archive['entry_count']} updates\n"
+        
+        # Add search tip
+        main_page_content += "\n---\n\n"
+        main_page_content += "*💡 Tip: Use the search function (top right) to find specific updates across all archives.*\n"
+        
+        # Update main page
+        page_id = int(WIKI_PAGE_ID)
+        success = await update_wiki_page(main_page_content, page_id)
         
         if success:
-            logger.info(f"Successfully updated wiki with {len(entries_to_add)} new entries (prepended, Discord mentions cleaned)")
+            logger.info(f"Successfully updated wiki main page with {len(recent_entries)} recent entries")
+            
+            # If this is a new month, create its archive page
+            for month_key in months_affected:
+                if month_key in entries_by_month and month_key != "unknown":
+                    month_entries = entries_by_month[month_key]
+                    month_entries.sort(key=lambda x: int(x['id']), reverse=True)
+                    
+                    try:
+                        month_date = datetime.strptime(month_key, "%Y-%m")
+                        month_name = month_date.strftime("%B %Y")
+                        page_title = f"Changelog - {month_name}"
+                        page_path = f"changelog-{month_key}"
+                        
+                        # Build month page content
+                        month_content = f"# {page_title}\n\n"
+                        month_content += f"[← Back to Recent Updates](/en/Change-log-history)\n\n"
+                        month_content += "---\n\n"
+                        month_content += f"*{len(month_entries)} updates in {month_name}*\n\n"
+                        
+                        for entry in month_entries:
+                            try:
+                                entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+                            except:
+                                entry_time = entry["timestamp"]
+                                
+                            month_content += f"<a name=\"entry-{entry['id']}\"></a>\n\n"
+                            month_content += f"## {entry_time} - Entry {entry['id']}\n"
+                            month_content += f"**Author:** {entry['author']}\n\n"
+                            
+                            content = entry['content'].strip()
+                            cleaned_content = clean_discord_mentions(content)
+                            
+                            month_content += cleaned_content + "\n\n---\n\n"
+                        
+                        # Create or update the monthly page
+                        logger.info(f"Creating/updating archive page for {month_name}...")
+                        await create_wiki_page(page_title, page_path, month_content)
+                        
+                    except Exception as e:
+                        logger.error(f"Error creating archive for month {month_key}: {str(e)}")
+            
             return True
         else:
-            logger.error("Failed to update wiki page")
+            logger.error("Failed to update wiki main page")
             return False
-            
+        
     except Exception as e:
         logger.error(f"Error updating wiki with new entries: {str(e)}")
         logger.error(traceback.format_exc())
         return False
-
 
 async def update_wiki_page(content: str, page_id: int) -> bool:
     """
@@ -1043,9 +1250,9 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
 
         # Update mutation with isPublished
         update_mutation = """
-        mutation UpdatePage($id: Int!, $content: String!) {
+        mutation UpdatePage($id: Int!, $input: PageUpdateInput!) {
           pages {
-            update(id: $id, content: $content, isPublished: true) {
+            update(id: $id, input: $input) {
               responseResult {
                 succeeded
                 errorCode
@@ -1056,10 +1263,12 @@ async def update_wiki_page(content: str, page_id: int) -> bool:
           }
         }
         """
-
         variables = {
             "id": page_id,
-            "content": content
+            "input": {
+                "content": content,
+                "isPublished": True
+            }
         }
 
         # Log request details
@@ -2041,6 +2250,223 @@ async def rebuild_wiki_changelog():
             
     except Exception as e:
         logger.error(f"Error rebuilding wiki: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/wiki/create-monthly-archives", dependencies=[Depends(verify_token)])
+async def create_wiki_monthly_archives():
+    """
+    Create monthly archive structure for wiki changelogs.
+    Main page shows last 30 days, with links to monthly archives.
+    Requires X-Patcher-Token header for authentication.
+    """
+    if not all([WIKI_API_URL, WIKI_API_KEY, WIKI_PAGE_ID]):
+        raise HTTPException(
+            status_code=500,
+            detail="Wiki integration is not fully configured"
+        )
+        
+    try:
+        # Get all changelogs
+        changelogs_response = await get_changelog(all=True)
+        all_entries = changelogs_response.get("changelogs", [])
+        
+        if not all_entries:
+            return {"status": "success", "message": "No changelogs found"}
+        
+        # Sort all entries by ID in DESCENDING order (newest first)
+        all_entries.sort(key=lambda x: int(x['id']), reverse=True)
+        
+        # Organize by month
+        entries_by_month = await organize_changelogs_by_month(all_entries)
+        
+        # Create main page with recent entries (last 30 days)
+        main_page_content = WIKI_HEADER + "\n\n"
+        main_page_content += "## Recent Updates (Last 30 Days)\n\n"
+        
+        # Get entries from last 30 days
+        cutoff_date = datetime.now() - timedelta(days=30)
+        recent_entries = []
+        archive_links = []
+        
+        # Process months in reverse chronological order
+        for month_key in sorted(entries_by_month.keys(), reverse=True):
+            if month_key == "unknown":
+                continue
+                
+            month_entries = entries_by_month[month_key]
+            month_entries.sort(key=lambda x: int(x['id']), reverse=True)
+            
+            # Check if any entries in this month are recent
+            month_has_recent = False
+            for entry in month_entries:
+                try:
+                    entry_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+                    if entry_date >= cutoff_date:
+                        recent_entries.append(entry)
+                        month_has_recent = True
+                except:
+                    pass
+            
+            # Create archive link for this month
+            try:
+                month_date = datetime.strptime(month_key, "%Y-%m")
+                month_name = month_date.strftime("%B %Y")
+                archive_links.append({
+                    "month_key": month_key,
+                    "month_name": month_name,
+                    "entry_count": len(month_entries),
+                    "has_recent": month_has_recent
+                })
+            except:
+                pass
+        
+        # Sort recent entries by ID descending
+        recent_entries.sort(key=lambda x: int(x['id']), reverse=True)
+        
+        # Add recent entries to main page
+        if recent_entries:
+            for entry in recent_entries:
+                try:
+                    entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+                except:
+                    entry_time = entry["timestamp"]
+                    
+                main_page_content += f"### {entry_time} - Entry {entry['id']}\n"
+                main_page_content += f"**Author:** {entry['author']}\n\n"
+                
+                # Clean Discord mentions
+                content = entry['content'].strip()
+                cleaned_content = clean_discord_mentions(content)
+                
+                # Truncate very long entries on main page
+                if len(cleaned_content) > 500:
+                    cleaned_content = cleaned_content[:500] + "..."
+                    # Find which month this entry belongs to
+                    entry_date = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+                    entry_month = entry_date.strftime("%Y-%m")
+                    cleaned_content += f"\n\n[View full entry →](/en/changelog-{entry_month}#entry-{entry['id']})"
+                
+                main_page_content += cleaned_content + "\n\n---\n\n"
+        else:
+            main_page_content += "*No updates in the last 30 days.*\n\n"
+        
+        # Add archive section
+        main_page_content += "\n## Monthly Archives\n\n"
+        main_page_content += "Browse older updates organized by month:\n\n"
+        
+        # Group archives by year for better organization
+        archives_by_year = defaultdict(list)
+        for archive in archive_links:
+            year = archive['month_key'][:4]
+            archives_by_year[year].append(archive)
+        
+        # Display archives grouped by year
+        for year in sorted(archives_by_year.keys(), reverse=True):
+            main_page_content += f"\n### {year}\n"
+            for archive in archives_by_year[year]:
+                page_path = f"changelog-{archive['month_key']}"
+                icon = "📍" if archive['has_recent'] else "📄"
+                main_page_content += f"- {icon} [{archive['month_name']}](/en/{page_path}) - {archive['entry_count']} updates\n"
+        
+        # Add search tip
+        main_page_content += "\n---\n\n"
+        main_page_content += "*💡 Tip: Use the search function (top right) to find specific updates across all archives.*\n"
+        
+        # Update main page
+        logger.info("Updating main changelog page...")
+        success = await update_wiki_page(main_page_content, int(WIKI_PAGE_ID))
+        
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update main page"
+            )
+        
+        # Create/update monthly archive pages
+        pages_created = 0
+        pages_updated = 0
+        pages_failed = 0
+        
+        for month_key, month_entries in entries_by_month.items():
+            if month_key == "unknown":
+                continue
+                
+            month_entries.sort(key=lambda x: int(x['id']), reverse=True)
+            
+            # Create monthly page content
+            try:
+                month_date = datetime.strptime(month_key, "%Y-%m")
+                month_name = month_date.strftime("%B %Y")
+                page_title = f"Changelog - {month_name}"
+                page_path = f"changelog-{month_key}"
+                
+                month_content = f"# {page_title}\n\n"
+                month_content += f"[← Back to Recent Updates](/en/Change-log-history) | "
+                
+                # Add navigation to previous/next month
+                all_months = sorted([k for k in entries_by_month.keys() if k != "unknown"])
+                current_index = all_months.index(month_key)
+                
+                if current_index > 0:
+                    prev_month = all_months[current_index - 1]
+                    prev_date = datetime.strptime(prev_month, "%Y-%m")
+                    month_content += f"[← {prev_date.strftime('%B %Y')}](/en/changelog-{prev_month}) | "
+                
+                if current_index < len(all_months) - 1:
+                    next_month = all_months[current_index + 1]
+                    next_date = datetime.strptime(next_month, "%Y-%m")
+                    month_content += f"[{next_date.strftime('%B %Y')} →](/en/changelog-{next_month})"
+                
+                month_content += "\n\n---\n\n"
+                month_content += f"*{len(month_entries)} updates in {month_name}*\n\n"
+                
+                # Add entries
+                for entry in month_entries:
+                    try:
+                        entry_time = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+                    except:
+                        entry_time = entry["timestamp"]
+                        
+                    # Add anchor for direct linking
+                    month_content += f"<a name=\"entry-{entry['id']}\"></a>\n\n"
+                    month_content += f"## {entry_time} - Entry {entry['id']}\n"
+                    month_content += f"**Author:** {entry['author']}\n\n"
+                    
+                    # Clean Discord mentions
+                    content = entry['content'].strip()
+                    cleaned_content = clean_discord_mentions(content)
+                    
+                    month_content += cleaned_content + "\n\n---\n\n"
+                
+                # Create or update the page
+                logger.info(f"Creating/updating page '{page_path}' with {len(month_entries)} entries...")
+                if await create_wiki_page(page_title, page_path, month_content):
+                    pages_created += 1
+                else:
+                    pages_failed += 1
+                    logger.error(f"Failed to create page for {month_name}")
+                    
+            except Exception as e:
+                logger.error(f"Error processing month {month_key}: {str(e)}")
+                pages_failed += 1
+        
+        return {
+            "status": "success",
+            "message": f"Updated main page and created/updated {pages_created} monthly archives ({pages_failed} failed)",
+            "details": {
+                "total_entries": len(all_entries),
+                "recent_entries": len(recent_entries),
+                "months_processed": len(entries_by_month) - (1 if "unknown" in entries_by_month else 0),
+                "pages_created": pages_created,
+                "pages_failed": pages_failed
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating monthly archives: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.post("/wiki/test-connection", dependencies=[Depends(verify_token)])
